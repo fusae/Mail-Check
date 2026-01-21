@@ -1,0 +1,11 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "zhipu/glm-4",
+  "provider": {
+    "zhipu": {
+      "options": {
+        "apiKey": "{env:ZHIPU_API_KEY}"
+      }
+    }
+  }
+}

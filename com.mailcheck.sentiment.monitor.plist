@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.mailcheck.sentiment.monitor</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>cd /Users/jamesyu/Documents/Opencode/Mail_Check && bash run.sh</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/jamesyu/Documents/Opencode/Mail_Check/logs/monitor.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/jamesyu/Documents/Opencode/Mail_Check/logs/monitor.stderr.log</string>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/jamesyu/Documents/Opencode/Mail_Check</string>
+</dict>
+</plist>

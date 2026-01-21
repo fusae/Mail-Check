@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+
+# 数据库
+*.db
+*.db-shm
+*.db-wal
+
+# 日志
+logs/*.log
+*.log
+
+# 配置（敏感信息）
+.env
+config/config.yaml
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 测试
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 临时文件
+*.tmp
+*.bak
+*.backup
+
+# Playwright
+.playwright/
+ms-playwright/
+
+# 编译文件
+*.egg-info/
+dist/
+build/

@@ -1,0 +1,42 @@
+# 舆情监控系统配置文件
+
+# Gmail 邮件配置
+email:
+  imap_server: "imap.gmail.com"
+  email_address: "tengdong2023@gmail.com"
+  app_password: "nzac szeh lkgz jglx"
+  
+  # 邮件识别规则
+  rules:
+    sender: "sydc@yj.microvivid.com"
+    subject_pattern: "新增.*条舆情信息"
+
+# 智谱AI配置
+ai:
+  provider: "zhipu"
+  model: "glm-4"
+  api_key: "0f1ded1043404ce0b042ceff711c1078.u58bWInxuKvZoLQ7"
+  api_url: "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+  
+  # AI判断参数
+  temperature: 0.3
+  max_tokens: 500
+
+# 舆情API配置
+sentiment:
+  base_url: "https://console.microvivid.com/prod-api/system"
+  
+  # 负面舆情判断阈值
+  negative_prob_threshold: 0.7
+
+# 运行配置
+runtime:
+  check_interval: 60  # 检查间隔（秒），默认5分钟
+  log_level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  log_file: "logs/sentiment_monitor.log"
+  database_path: "data/processed_emails.db"
+
+# 浏览器配置
+browser:
+  headless: true  # 无头模式
+  timeout: 30000  # 超时时间（毫秒）

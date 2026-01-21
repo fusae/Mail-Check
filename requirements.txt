@@ -1,0 +1,21 @@
+# 邮件处理
+beautifulsoup4>=4.12.0
+lxml>=5.0.0
+
+# 网页抓取
+playwright>=1.40.0
+
+# HTTP请求
+requests>=2.31.0
+
+# 配置文件
+pyyaml>=6.0.1
+
+# 工具库
+python-dotenv>=1.0.0
+
+# Web服务器
+flask>=3.0.0
+
+# 加密
+pycryptodome>=3.19.0
