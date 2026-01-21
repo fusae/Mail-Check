@@ -69,10 +69,6 @@ if [ "$1" == "--daemon" ] || [ "$1" == "-d" ]; then
         echo "管理命令:"
         echo "  停止服务: ./stop.sh"
         echo "  查看状态: ./status.sh"
-        echo ""
-        echo "Webhook服务器:"
-        echo "  启动: ./start_webhook.sh"
-        echo "  停止: ./stop_webhook.sh"
     else
         echo -e "${RED}启动失败，请查看日志: logs/startup.log${NC}"
         exit 1

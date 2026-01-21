@@ -13,9 +13,3 @@ pyyaml>=6.0.1
 
 # 工具库
 python-dotenv>=1.0.0
-
-# Web服务器
-flask>=3.0.0
-
-# 加密
-pycryptodome>=3.19.0

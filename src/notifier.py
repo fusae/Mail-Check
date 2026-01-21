@@ -9,58 +9,37 @@ import requests
 import logging
 import yaml
 import json
-import os
-import sys
-
-# 添加src目录到路径
-current_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, current_dir)
 
 class Notifier:
     def __init__(self, config):
         self.config = config.get('notification', {})
         self.provider = self.config.get('provider', 'console')  # 默认控制台输出
         self.logger = logging.getLogger(__name__)
-
+        
         # 加载各平台配置
         self.telegram = self.config.get('telegram', {})
         self.serverchan = self.config.get('serverchan', {})
         self.wechat_work = self.config.get('wechat_work', {})
         self.dingtalk = self.config.get('dingtalk', {})
-
-        # 初始化企业应用API（如果配置了）
-        self.wechat_app = None
-        if self.wechat_work.get('corp_id') and self.wechat_work.get('agent_id'):
-            try:
-                from wechat_api import WeChatWorkAPI
-                self.wechat_app = WeChatWorkAPI(self.wechat_work)
-                self.logger.info("企业应用API初始化成功")
-            except Exception as e:
-                self.logger.warning(f"企业应用API初始化失败: {e}")
     
-    def send(self, title, content, hospital_name=None, sentiment_info=None, sentiment_id=None):
+    def send(self, title, content, hospital_name=None, sentiment_info=None):
         """
         发送通知
-
+        
         Args:
             title: 标题
             content: 内容
             hospital_name: 医院名称
             sentiment_info: 舆情详细信息
-            sentiment_id: 舆情ID（用于反馈）
         """
         self.logger.info(f"准备发送通知: {title}")
-
+        
         if self.provider == 'telegram':
             return self._send_via_telegram(title, content, hospital_name, sentiment_info)
         elif self.provider == 'serverchan':
             return self._send_via_serverchan(title, content, hospital_name, sentiment_info)
         elif self.provider == 'wechat_work':
-            # 如果配置了企业应用，使用企业应用
-            if self.wechat_app:
-                return self._send_via_wechat_app(title, content, hospital_name, sentiment_info, sentiment_id)
-            else:
-                return self._send_via_wechat_webhook(title, content, hospital_name, sentiment_info)
+            return self._send_via_wechat_work(title, content, hospital_name, sentiment_info)
         elif self.provider == 'dingtalk':
             return self._send_via_dingtalk(title, content, hospital_name, sentiment_info)
         else:
@@ -103,26 +82,119 @@ class Notifier:
                 return self._print_to_console(title, content, hospital_name, sentiment_info)
             
             # 构建消息内容
-            # 简洁的消息格式
-            original_url = sentiment_info.get('original_url', '')
-            original_url_section = f"\n🔗 原文链接: {original_url}" if original_url else ""
+            if enable_markdown and not enable_html:
+                # Markdown格式
+                message = f"""
+{message_prefix} **{title}**
 
-            message = f"""⚠️ {title}
+**医院：** {hospital_name}
 
-🏥 医院: {hospital_name}
-📱 来源: {sentiment_info.get('source', '未知')}
-📝 标题: {sentiment_info.get('title', '无标题')}
-🤖 AI判断: {sentiment_info.get('reason', '未判断')}
-⚡ 严重程度: {sentiment_info.get('severity', 'medium').upper()}{original_url_section}
+**来源：** {sentiment_info.get('source', '未知')}
+**AI判断：** {sentiment_info.get('reason', '未判断')}
+**严重程度：** {sentiment_info.get('severity', 'medium')}
 
-📄 内容摘要:
-{content[:200]}{'...' if len(content) > 200 else ''}
+**详细内容：**
+{content}
 
-━━━━━━━━━━━━━━━━━━━━━
-请及时查看详情并处理。
+请及时查看详情。
 """
+            elif enable_html:
+                # HTML格式
+                message = f"""
+<html>
+<body style="font-family: Arial, sans-serif; padding: 20px; line-height: 1.6;">
+    <h2 style="color: #e74c3c;">{message_prefix} {title}</h2>
+    <table style="border-collapse: collapse; width: 100%; max-width: 800px;">
+        <tr style="background-color: #f8f9fa;">
+            <th style="padding: 12px; text-align: left; border: 1px solid #dee2e6; text-align: left; font-weight: bold;">
+                项目
+            </th>
+            <th style="padding: 12px; text-align: left; border: 1px solid #dee2e6; text-align: left;">
+                内容
+            </th>
+        </tr>
+        <tr>
+            <td style="padding: 12px; border: 1px solid #dee2e6; font-weight: bold;">
+                医院
+            </td>
+            <td style="padding: 12px; border: 1px solid #dee2e6;">
+                {hospital_name}
+            </td>
+        </tr>
+        <tr>
+            <td style="padding: 12px; border: 1px solid #dee2e6; font-weight: bold;">
+                来源
+            </td>
+            <td style="padding:  0px; border: 1px solid #dee2e6;">
+                {sentiment_info.get('source', '未知')}
+            </td>
+        </tr>
+        <tr>
+            <td style="padding: 12px; border: 1px solid #dee2e6; font-weight: bold;">
+                标题
+            </td>
+            <td style="padding: 0px; border: 1px solid #dee2e6;">
+                {sentiment_info.get('title', '无标题')}
+            </td>
+        </tr>
+        <tr>
+            <td style="padding: 12px; border: 1px solid #dee2e6; font-weight: bold;">
+                AI判断
+            </td>
+            <td style="padding: 0px; border: 1px solid #dee2e6; color: #e74c3c;">
+                {sentiment_info.get('reason', '未判断')}
+            </td>
+        </tr>
+        <tr>
+            <td style="padding: 12px; border: 1px solid #dee2e6; font-weight: bold;">
+                严重程度
+            </td>
+            <td style="padding: 0px; border: 1px solid #dee2e6;">
+                <span style="background-color: 
+                    {'#e74c3c' if sentiment_info.get('severity') == 'high' else
+                     '#f0ad0e' if sentiment_info.get('severity') == 'medium' else
+                     '#6c757d' if sentiment_info.get('severity') == 'low' else '#95a5a6'}">
+                {sentiment_info.get('severity', 'medium')}
+                </span>
+            </td>
+        </tr>
+        <tr>
+            <td style="padding: 12px; border: 1px solid #dee2e6; font-weight: bold; vertical-align: top;">
+                内容摘要
+            </td>
+            <td style="padding: 0px; border: 1px solid #dee2e6;">
+                <div style="background-color: #f8f9fa; padding: 10px; border-radius: 5px; margin-bottom: 10px;">
+                    {content[:500]}
+                    {'...' if len(content) > 500 else ''}
+                </div>
+                </td>
+        </tr>
+    </table>
+    
+    <script>
+        window.top.close();
+    </script>
+</body>
+</html>
+"""
+            else:
+                # 纯文本格式（默认）
+                message = f"""
+{message_prefix} {title}
 
-                        # Telegram API调用
+医院: {hospital_name}
+来源: {sentiment_info.get('source', '未知')}
+标题: {sentiment_info.get('title', '无标题')}
+AI判断: {sentiment_info.get('reason', '未判断')}
+严重程度: {sentiment_info.get('severity', 'medium')}
+
+详细内容:
+{content}
+
+请及时查看详情。
+"""
+            
+            # Telegram API调用
             url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
             params = {
                 'chat_id': chat_id,
@@ -163,17 +235,15 @@ class Notifier:
             sent_title = sentiment_info.get('title', '无标题')
             reason = sentiment_info.get('reason', '未判断')
             severity = sentiment_info.get('severity', 'medium')
-            original_url = sentiment_info.get('original_url', '')
-
+            
             # 构建完整内容
-            original_url_section = f"原文链接: {original_url}\n" if original_url else ""
             full_content = f"""
 医院: {hospital_name}
 来源: {source}
 标题: {sent_title}
 AI判断: {reason}
 严重程度: {severity}
-{original_url_section}
+
 详细内容:
 {content}
 """
@@ -219,13 +289,7 @@ AI判断: {reason}
             sent_title = sentiment_info.get('title', '无标题')
             reason = sentiment_info.get('reason', '未判断')
             severity = sentiment_info.get('severity', 'medium')
-            original_url = sentiment_info.get('original_url', '')
-
-            original_url_section = f"\n> **原文链接：** {original_url}" if original_url else ""
-
-            # 限制内容长度，避免超过企业微信 4096 字符限制
-            content_preview = content[:300] + '...' if len(content) > 300 else content
-
+            
             markdown_msg = {
                 "msgtype": "markdown",
                 "markdown": {
@@ -236,10 +300,10 @@ AI判断: {reason}
 > **医院：** {hospital_name}
 > **来源：** {source}
 > **AI判断：** {reason}
-> **严重程度：** {severity}{original_url_section}
+> **严重程度：** {severity}
 
-**内容摘要：**
-{content_preview}
+**详细内容：**
+{content}
 
 请及时查看详情。
 """
@@ -264,65 +328,7 @@ AI判断: {reason}
             self.logger.error(f"企业微信通知异常: {e}")
             return self._print_to_console(title, content, hospital_name, sentiment_info)
     
-    def _send_via_wechat_app(self, title, content, hospital_name, sentiment_info, sentiment_id=None):
-        """通过企业应用发送（支持反馈）"""
-        try:
-            # 获取配置
-            to_user = self.wechat_work.get('to_user', '@all')
-
-            # 构建消息
-            source = sentiment_info.get('source', '未知')
-            sent_title = sentiment_info.get('title', '无标题')
-            reason = sentiment_info.get('reason', '未判断')
-            severity = sentiment_info.get('severity', 'medium')
-            original_url = sentiment_info.get('original_url', '')
-
-            # 限制内容长度
-            content_preview = content[:300] + '...' if len(content) > 300 else content
-
-            original_url_section = f"\n> **原文链接：** {original_url}" if original_url else ""
-
-            # 构建Markdown消息（包含反馈提示）
-            markdown_content = f"""### ⚠️ {title}
-
-> **医院：** {hospital_name}
-> **来源：** {source}
-> **AI判断：** {reason}
-> **严重程度：** {severity}{original_url_section}
-
-**内容摘要：**
-{content_preview}
-
----
-> 💡 **AI自动判断，可能误报**
->
-> **反馈方式：**
-> - 直接回复本消息即可反馈
-> - 例：`误报，这是正常的XX新闻`
-> - 例：`确认，确实是负面`
-
-> 如果您认为这是误报，请回复告知原因，帮助AI优化判断！
-"""
-
-            # 发送消息
-            result = self.wechat_app.send_markdown(to_user, markdown_content)
-
-            if result.get('success'):
-                self.logger.info("✓ 企业应用通知发送成功")
-                # 保存消息ID，用于关联回复
-                if sentiment_id:
-                    self._save_message_record(sentiment_id, result.get('msgid'))
-                return True
-            else:
-                self.logger.error(f"✗ 企业应用通知失败: {result.get('error')}")
-                return self._print_to_console(title, content, hospital_name, sentiment_info)
-
-        except Exception as e:
-            self.logger.error(f"企业应用通知异常: {e}", exc_info=True)
-            return self._print_to_console(title, content, hospital_name, sentiment_info)
-
-    def _send_via_wechat_webhook(self, title, content, hospital_name, sentiment_info):
-        """通过企业微信Webhook发送（备用，不支持反馈）"""
+    def _send_via_dingtalk(self, title, content, hospital_name, sentiment_info):
         """通过钉钉发送（备用）"""
         try:
             webhook_url = self.dingtalk.get('webhook_url', '')
@@ -336,10 +342,7 @@ AI判断: {reason}
             sent_title = sentiment_info.get('title', '无标题')
             reason = sentiment_info.get('reason', '未判断')
             severity = sentiment_info.get('severity', 'medium')
-            original_url = sentiment_info.get('original_url', '')
-
-            original_url_section = f"\n**原文链接：** {original_url}" if original_url else ""
-
+            
             markdown_msg = {
                 "msgtype": "markdown",
                 "markdown": {
@@ -349,7 +352,7 @@ AI判断: {reason}
 **医院：** {hospital_name}
 **来源：** {source}
 **AI判断：** {reason}
-**严重程度：** {severity}{original_url_section}
+**严重程度：** {severity}
 
 **详细内容：**
 {content}
@@ -376,42 +379,6 @@ AI判断: {reason}
         except Exception as e:
             logger.error(f"钉钉通知异常: {e}")
             return self._print_to_console(title, content, hospital_name, sentiment_info)
-
-    def _save_message_record(self, sentiment_id, msg_id):
-        """保存消息记录（用于关联回复）"""
-        try:
-            import sqlite3
-            parent_dir = os.path.dirname(current_dir)
-            db_path = os.path.join(parent_dir, 'data', 'processed_emails.db')
-
-            conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
-
-            # 创建消息记录表
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS message_records (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    sentiment_id TEXT UNIQUE,
-                    msg_id TEXT,
-                    sent_time TEXT,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-
-            # 插入或更新
-            cursor.execute('''
-                INSERT OR REPLACE INTO message_records
-                (sentiment_id, msg_id, sent_time)
-                VALUES (?, ?, ?)
-            ''', (sentiment_id, msg_id, datetime.now().isoformat()))
-
-            conn.commit()
-            conn.close()
-
-            self.logger.info(f"消息记录已保存: {sentiment_id} -> {msg_id}")
-
-        except Exception as e:
-            self.logger.warning(f"保存消息记录失败: {e}")
 
 if __name__ == '__main__':
     # 测试Telegram
