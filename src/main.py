@@ -91,6 +91,7 @@ class SentimentMonitor:
                 hospital_name TEXT,
                 title TEXT,
                 source TEXT,
+                content TEXT,
                 reason TEXT,
                 severity TEXT,
                 processed_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -124,11 +125,32 @@ class SentimentMonitor:
             CREATE INDEX IF NOT EXISTS idx_feedback_queue_user_status
             ON feedback_queue (user_id, status, sent_time)
         ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS feedback_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pattern TEXT,
+                rule_type TEXT,
+                action TEXT,
+                confidence REAL,
+                enabled INTEGER DEFAULT 1,
+                source_feedback_id INTEGER,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        self._ensure_column(cursor, 'negative_sentiments', 'content', 'TEXT')
         
         conn.commit()
         conn.close()
         
         self.logger.info("数据库初始化完成")
+
+    def _ensure_column(self, cursor, table_name, column_name, column_def):
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        columns = {row[1] for row in cursor.fetchall()}
+        if column_name not in columns:
+            cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_def}")
     
     def is_email_processed(self, token):
         """检查邮件是否已处理"""
@@ -166,13 +188,14 @@ class SentimentMonitor:
         
         cursor.execute('''
             INSERT INTO negative_sentiments 
-            (sentiment_id, hospital_name, title, source, reason, severity)
-            VALUES (?, ?, ?, ?, ?, ?)
+            (sentiment_id, hospital_name, title, source, content, reason, severity)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         ''', (
             sentiment.get('id', ''),
             hospital_name,
             sentiment.get('title', ''),
             sentiment.get('webName', ''),
+            sentiment.get('ocrData') or sentiment.get('allContent', ''),
             analysis['reason'],
             analysis['severity']
         ))

@@ -81,6 +81,19 @@ def init_database():
         ON feedback_queue (user_id, status, sent_time)
     ''')
 
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS feedback_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pattern TEXT,
+            rule_type TEXT,
+            action TEXT,
+            confidence REAL,
+            enabled INTEGER DEFAULT 1,
+            source_feedback_id INTEGER,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
     conn.commit()
     conn.close()
     logger.info("反馈数据库初始化完成")
@@ -101,6 +114,37 @@ def parse_feedback(text):
 def extract_sentiment_id(text):
     match = re.search(r'\b(\d{8,})\b', text)
     return match.group(1) if match else None
+
+
+def extract_rule_candidates(text):
+    rules = []
+    if not text:
+        return rules
+
+    explicit_patterns = []
+    keyword_match = re.search(r'(关键词|关键字|排除|规则)[:：]\s*(.+)', text)
+    if keyword_match:
+        explicit_patterns.append(keyword_match.group(2))
+
+    quoted = re.findall(r'[“"《](.+?)[”"》]', text)
+    explicit_patterns.extend(quoted)
+
+    candidates = []
+    for raw in explicit_patterns:
+        parts = re.split(r'[，,、;；\s]+', raw)
+        for part in parts:
+            term = part.strip()
+            if 2 <= len(term) <= 20:
+                candidates.append(term)
+
+    for term in candidates:
+        rules.append({
+            'pattern': term,
+            'rule_type': 'keyword',
+            'confidence': 0.9
+        })
+
+    return rules
 
 
 def get_pending_sentiment(user_id):
@@ -172,6 +216,30 @@ def save_feedback(data):
         data['user_id'],
         datetime.now().isoformat()
     ))
+    feedback_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return feedback_id
+
+
+def save_feedback_rules(feedback_id, rules, action):
+    if not rules:
+        return
+
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    for rule in rules:
+        cursor.execute('''
+            INSERT INTO feedback_rules (
+                pattern, rule_type, action, confidence, enabled, source_feedback_id
+            ) VALUES (?, ?, ?, ?, 1, ?)
+        ''', (
+            rule.get('pattern'),
+            rule.get('rule_type', 'keyword'),
+            action,
+            rule.get('confidence', 0.5),
+            feedback_id
+        ))
     conn.commit()
     conn.close()
 
@@ -246,7 +314,7 @@ def handle_text_message(msg):
         send_reply(user_id, "未找到可反馈的舆情，请稍后再试。")
         return
 
-    save_feedback({
+    feedback_id = save_feedback({
         'sentiment_id': sentiment_id,
         'feedback_judgment': judgment,
         'feedback_type': feedback_type,
@@ -257,6 +325,8 @@ def handle_text_message(msg):
 
     if judgment is False:
         delete_negative_sentiment(sentiment_id)
+        rules = extract_rule_candidates(content)
+        save_feedback_rules(feedback_id, rules, 'exclude')
 
     send_reply(user_id, "✅ 已收到反馈并记录，谢谢！")
 

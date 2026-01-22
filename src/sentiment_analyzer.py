@@ -5,25 +5,36 @@ AI舆情分析模块
 使用智谱AI判断舆情是否为负面
 """
 
-import requests
 import json
-import yaml
 import logging
+import re
+import sqlite3
+
+import requests
+import yaml
 
 class SentimentAnalyzer:
     def __init__(self, config):
-        self.config = config['ai']
-        self.provider = self.config['provider']
-        self.model = self.config['model']
-        self.api_key = self.config['api_key']
-        self.api_url = self.config['api_url']
-        self.temperature = self.config.get('temperature', 0.3)
-        self.max_tokens = self.config.get('max_tokens', 500)
+        self.ai_config = config['ai']
+        self.provider = self.ai_config['provider']
+        self.model = self.ai_config['model']
+        self.api_key = self.ai_config['api_key']
+        self.api_url = self.ai_config['api_url']
+        self.temperature = self.ai_config.get('temperature', 0.3)
+        self.max_tokens = self.ai_config.get('max_tokens', 500)
+
+        self.runtime_config = config.get('runtime', {})
+        self.feedback_config = config.get('feedback', {})
+        self.db_path = self.runtime_config.get('database_path')
         
         self.logger = logging.getLogger(__name__)
     
     def analyze(self, sentiment, hospital_name):
         """分析舆情是否为负面"""
+        rule_result = self._apply_feedback_rules(sentiment)
+        if rule_result:
+            return rule_result
+
         if self.provider == 'zhipu':
             return self._analyze_with_zhipu(sentiment, hospital_name)
         else:
@@ -132,6 +143,9 @@ class SentimentAnalyzer:
         if len(text_content) > 1000:
             text_content = text_content[:1000]
         
+        feedback_context = self._build_feedback_context()
+        rule_hints = self._build_rule_hints()
+
         prompt = f"""你是一个专业的舆情分析助手。请判断以下内容是否对医院产生真正的负面影响。
 
 判断标准（以下情况视为负面舆情）：
@@ -146,6 +160,7 @@ class SentimentAnalyzer:
 - 中性医疗报道（如医院开展新技术、学术会议）
 - 正面新闻（如医院成功救治患者）
 - 常规的医疗科普内容
+{rule_hints}{feedback_context}
 
 舆情信息：
 涉及医院: {hospital_name}
@@ -161,6 +176,162 @@ class SentimentAnalyzer:
 }}"""
         
         return prompt
+
+    def _apply_feedback_rules(self, sentiment):
+        sentiment_id = sentiment.get('id')
+        if sentiment_id:
+            feedback = self._get_feedback_by_sentiment_id(sentiment_id)
+            if feedback is not None:
+                return {
+                    'is_negative': feedback,
+                    'actual_hospital': None,
+                    'reason': '已存在用户反馈',
+                    'severity': 'low' if not feedback else 'medium',
+                    'confidence': 'high'
+                }
+
+        rules = self._load_feedback_rules()
+        if not rules:
+            return None
+
+        text = self._combine_text(sentiment)
+        for rule in rules:
+            if self._rule_matches(text, rule):
+                if rule['action'] == 'exclude':
+                    return {
+                        'is_negative': False,
+                        'actual_hospital': None,
+                        'reason': f"匹配反馈规则: {rule['pattern']}",
+                        'severity': 'low',
+                        'confidence': 'high'
+                    }
+                if rule['action'] == 'include':
+                    return {
+                        'is_negative': True,
+                        'actual_hospital': None,
+                        'reason': f"匹配反馈规则: {rule['pattern']}",
+                        'severity': 'medium',
+                        'confidence': 'high'
+                    }
+
+        return None
+
+    def _get_feedback_by_sentiment_id(self, sentiment_id):
+        if not self.db_path:
+            return None
+
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT feedback_judgment FROM sentiment_feedback
+                WHERE sentiment_id = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+            ''', (sentiment_id,))
+            row = cursor.fetchone()
+            conn.close()
+            if row is None:
+                return None
+            return bool(row[0])
+        except Exception as e:
+            self.logger.error(f"读取反馈失败: {e}")
+            return None
+
+    def _load_feedback_rules(self):
+        if not self.db_path or not self.feedback_config.get('enable_rules', True):
+            return []
+
+        min_conf = self.feedback_config.get('rules_min_confidence', 0.7)
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT pattern, rule_type, action, confidence
+                FROM feedback_rules
+                WHERE enabled = 1 AND confidence >= ?
+                ORDER BY confidence DESC, created_at DESC
+                LIMIT 50
+            ''', (min_conf,))
+            rows = cursor.fetchall()
+            conn.close()
+            return [
+                {
+                    'pattern': row[0],
+                    'rule_type': row[1],
+                    'action': row[2],
+                    'confidence': row[3]
+                }
+                for row in rows
+            ]
+        except Exception as e:
+            self.logger.error(f"读取反馈规则失败: {e}")
+            return []
+
+    def _rule_matches(self, text, rule):
+        if not text:
+            return False
+        if rule['rule_type'] == 'regex':
+            try:
+                return re.search(rule['pattern'], text) is not None
+            except re.error:
+                return False
+        return rule['pattern'] in text
+
+    def _combine_text(self, sentiment):
+        title = sentiment.get('title', '')
+        content = sentiment.get('allContent', '')
+        ocr_content = sentiment.get('ocrData', '')
+        web_name = sentiment.get('webName', '未知')
+        return f"{title}\n{ocr_content}\n{content}\n{web_name}"
+
+    def _build_rule_hints(self):
+        if not self.feedback_config.get('enable_rules', True):
+            return ''
+
+        rules = self._load_feedback_rules()
+        if not rules:
+            return ''
+
+        patterns = [rule['pattern'] for rule in rules[:10]]
+        return "\n用户反馈规则（命中时优先考虑为非负面或负面）：\n" + "、".join(patterns) + "\n"
+
+    def _build_feedback_context(self):
+        if not self.db_path or not self.feedback_config.get('enable_few_shot', True):
+            return ''
+
+        limit = self.feedback_config.get('max_few_shot', 5)
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT f.sentiment_id, f.feedback_judgment, f.feedback_text,
+                       n.title, n.hospital_name, n.source, n.content
+                FROM sentiment_feedback f
+                LEFT JOIN negative_sentiments n
+                ON f.sentiment_id = n.sentiment_id
+                ORDER BY f.created_at DESC
+                LIMIT ?
+            ''', (limit,))
+            rows = cursor.fetchall()
+            conn.close()
+
+            if not rows:
+                return ''
+
+            lines = ["\n用户反馈示例（供判断参考）："]
+            for idx, row in enumerate(rows, 1):
+                sentiment_id, judgment, feedback_text, title, hospital, source, content = row
+                label = '负面' if judgment else '非负面'
+                snippet = (content or '')[:200]
+                lines.append(
+                    f"案例{idx}: 标题:{title or '无标题'}；医院:{hospital or '未知'}；来源:{source or '未知'}；内容:{snippet}；用户反馈:{feedback_text}；结论:{label}"
+                )
+
+            return "\n" + "\n".join(lines) + "\n"
+        except Exception as e:
+            self.logger.error(f"读取反馈样本失败: {e}")
+            return ''
     
     def _default_analysis(self, sentiment):
         """默认分析（当AI不可用时）"""
