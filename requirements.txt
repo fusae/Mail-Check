@@ -8,14 +8,11 @@ playwright>=1.40.0
 # HTTP请求
 requests>=2.31.0
 
-# Webhook
+# Web服务
 flask>=3.0.0
 
 # 配置文件
 pyyaml>=6.0.1
-
-# 企业微信加解密
-pycryptodome>=3.20.0
 
 # 工具库
 python-dotenv>=1.0.0

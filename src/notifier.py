@@ -5,18 +5,21 @@
 支持Server酱、企业微信、钉钉、Telegram等多种通知方式
 """
 
+import hashlib
+import hmac
 import json
 import logging
 import os
+import time
+from urllib.parse import urlencode
 
 import requests
 import yaml
 
-from wechat_api import WeChatWorkAPI
-
 class Notifier:
     def __init__(self, config):
         self.config = config.get('notification', {})
+        self.feedback_config = config.get('feedback', {})
         self.provider = self.config.get('provider', 'console')  # 默认控制台输出
         self.logger = logging.getLogger(__name__)
         
@@ -26,9 +29,6 @@ class Notifier:
         self.wechat_work = self.config.get('wechat_work', {})
         self.dingtalk = self.config.get('dingtalk', {})
 
-        self.wechat_api = None
-        if self.wechat_work.get('corp_id') and self.wechat_work.get('agent_id') and self.wechat_work.get('secret'):
-            self.wechat_api = WeChatWorkAPI(self.wechat_work)
     
     def send(self, title, content, hospital_name=None, sentiment_info=None):
         """
@@ -289,92 +289,36 @@ AI判断: {reason}
             return self._print_to_console(title, content, hospital_name, sentiment_info)
     
     def _send_via_wechat_work(self, title, content, hospital_name, sentiment_info):
-        """通过企业微信发送（优先应用消息，回退Webhook）"""
-        if self.wechat_api:
-            result = self._send_via_wechat_work_app(title, content, hospital_name, sentiment_info)
-            if result.get('success'):
-                return result
-            if self.wechat_work.get('webhook_url'):
-                self.logger.warning("企业微信应用发送失败，尝试Webhook回退")
-                return self._send_via_wechat_work_webhook(title, content, hospital_name, sentiment_info)
-            return result
-
+        """通过企业微信Webhook发送"""
         return self._send_via_wechat_work_webhook(title, content, hospital_name, sentiment_info)
 
-    def _get_wechat_recipients(self):
-        to_user = self.wechat_work.get('to_user') or self.wechat_work.get('touser')
-        to_party = self.wechat_work.get('to_party')
-        to_tag = self.wechat_work.get('to_tag')
+    def _build_feedback_url(self, sentiment_id):
+        base_url = self.feedback_config.get('link_base_url')
+        secret = self.feedback_config.get('link_secret')
+        if not base_url or not secret or not sentiment_id:
+            return None
 
-        if not to_user and not to_party and not to_tag:
-            to_user = '@all'
+        ts = int(time.time())
+        message = f"{sentiment_id}:{ts}".encode('utf-8')
+        sig = hmac.new(secret.encode('utf-8'), message, hashlib.sha256).hexdigest()
 
-        recipients = []
-        if to_user and to_user != '@all':
-            recipients = [u.strip() for u in to_user.split('|') if u.strip()]
-        else:
-            recipients = ['@all']
+        query = urlencode({
+            'sentiment_id': sentiment_id,
+            'ts': ts,
+            'sig': sig
+        })
 
-        return to_user, to_party, to_tag, recipients
+        joiner = '&' if '?' in base_url else '?'
+        return f"{base_url}{joiner}{query}"
 
-    def _build_wechat_card(self, title, content, hospital_name, sentiment_info):
+    def _format_wechat_markdown(self, title, content, hospital_name, sentiment_info):
         sentiment_id = sentiment_info.get('id') or sentiment_info.get('sentiment_id')
         source = sentiment_info.get('source', '未知')
         sent_title = sentiment_info.get('title', '无标题')
         reason = sentiment_info.get('reason', '未判断')
         severity = sentiment_info.get('severity', 'medium')
-
-        snippet = (content or '').replace('\n', ' ').strip()
-        if len(snippet) > 120:
-            snippet = snippet[:120] + '...'
-
-        button_list = [{
-            "text": "误判舆情",
-            "style": 2,
-            "key": f"false_positive_{sentiment_id}"
-        }]
-
-        if self.wechat_work.get('enable_confirm_button'):
-            button_list.append({
-                "text": "确认负面",
-                "style": 1,
-                "key": f"true_positive_{sentiment_id}"
-            })
-
-        card = {
-            "card_type": "button_interaction",
-            "source": {
-                "desc": "舆情监控",
-                "desc_color": 0
-            },
-            "main_title": {
-                "title": title,
-                "desc": f"医院：{hospital_name}"
-            },
-            "sub_title_text": (
-                f"来源：{source}\n"
-                f"标题：{sent_title}\n"
-                f"AI判断：{reason}\n"
-                f"严重程度：{severity}\n"
-                f"摘要：{snippet}"
-            ),
-            "button_list": button_list
-        }
-
-        url = sentiment_info.get('url')
-        if url:
-            card["card_action"] = {
-                "type": 1,
-                "url": url
-            }
-
-        return card
-
-    def _format_wechat_markdown(self, title, content, hospital_name, sentiment_info):
-        source = sentiment_info.get('source', '未知')
-        sent_title = sentiment_info.get('title', '无标题')
-        reason = sentiment_info.get('reason', '未判断')
-        severity = sentiment_info.get('severity', 'medium')
+        feedback_url = self._build_feedback_url(sentiment_id)
+        feedback_line = f"\n**反馈链接：** {feedback_url}\n" if feedback_url else ""
 
         return f"""### ⚠️ 舆情监控通知
 
@@ -385,42 +329,13 @@ AI判断: {reason}
 > **标题：** {sent_title}
 > **AI判断：** {reason}
 > **严重程度：** {severity}
+{feedback_line}
 
 **详细内容：**
 {content}
 
 请及时查看详情。
 """
-
-    def _send_via_wechat_work_app(self, title, content, hospital_name, sentiment_info):
-        """通过企业微信应用发送（支持按钮回调）"""
-        if not self.wechat_api:
-            return {'success': False, 'error': 'wechat_app_not_configured'}
-
-        to_user, to_party, to_tag, recipients = self._get_wechat_recipients()
-        sentiment_id = sentiment_info.get('id') or sentiment_info.get('sentiment_id')
-
-        try:
-            if sentiment_id:
-                card = self._build_wechat_card(title, content, hospital_name, sentiment_info)
-                result = self.wechat_api.send_template_card(to_user, card, to_party, to_tag)
-            else:
-                markdown = self._format_wechat_markdown(title, content, hospital_name, sentiment_info)
-                result = self.wechat_api.send_markdown(to_user, markdown, to_party, to_tag)
-
-            if result.get('success'):
-                self.logger.info("✓ 企业微信应用通知发送成功")
-                return {'success': True, 'msgid': result.get('msgid'), 'recipients': recipients}
-
-            self.logger.error(f"✗ 企业微信应用通知失败: {result.get('error')}")
-            return {'success': False, 'error': result.get('error')}
-
-        except requests.exceptions.Timeout:
-            self.logger.error("企业微信应用请求超时")
-            return {'success': False, 'error': 'timeout'}
-        except Exception as e:
-            self.logger.error(f"企业微信应用通知异常: {e}")
-            return {'success': False, 'error': str(e)}
 
     def _send_via_wechat_work_webhook(self, title, content, hospital_name, sentiment_info):
         """通过企业微信Webhook发送（不支持回调）"""
