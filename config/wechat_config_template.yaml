@@ -1,0 +1,107 @@
+# 企业微信应用配置模板
+# 请根据你的企业微信应用信息填写以下字段
+
+wechat_work:
+  # 企业微信应用配置
+  # ============ 必填项 ============
+  
+  # 企业ID（CorpId）
+  # 获取方式: 企业微信管理后台 -> 企业信息 -> 企业ID
+  # 格式: ww1234567890abcdef
+  corp_id: ""
+  
+  # 应用ID（AgentId）
+  # 获取方式: 企业微信管理后台 -> 应用管理 -> 选择应用 -> 查看AgentId
+  # 格式: 数字（如：123456）
+  agent_id: ""
+  
+  # 应用密钥（Secret）
+  # 获取方式: 企业微信管理后台 -> 应用管理 -> 选择应用 -> 查看Secret
+  # 格式: xxx-xxx-xxx
+  secret: ""
+  
+  # 验证Token
+  # 获取方式: 企业微信管理后台 -> 应用管理 -> 选择应用 -> 接收消息 -> 随机获取
+  # 格式: 自定义字符串（如：abc123）
+  token: ""
+  
+  # 加密密钥（EncodingAESKey）
+  # 获取方式: 企业微信管理后台 -> 应用管理 -> 选择应用 -> 接收消息 -> 随机获取
+  # 格式: Base64编码的字符串（自动生成）
+  encoding_aes_key: ""
+  
+  # ============ 可选项 ============
+  
+  # 接收人配置
+  # 支持用户、部门、标签
+  # to_user: 用户ID，@all表示所有人
+  # to_party: 部门ID
+  # to_tag: 标签ID
+  to_user: "@all"
+  to_party: ""
+  to_tag: ""
+  
+  # 是否启用"确认负面"按钮
+  # true: 显示两个按钮（误判舆情、确认负面）
+  # false: 只显示一个按钮（误判舆情）
+  enable_confirm_button: false
+  
+  # 群机器人配置（回退方案，应用消息失败时使用）
+  # 获取方式: 企业微信群 -> 添加群机器人 -> 生成Webhook URL
+  webhook_url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=42ef2694-b71f-425c-b530-8652d41ec92c"
+
+# 配置说明
+# =========================================
+# 
+# 1. 完整配置流程:
+#    a. 创建企业微信应用
+#    b. 记录 CorpId、AgentId、Secret
+#    c. 配置接收消息 -> 生成 Token 和 EncodingAESKey
+#    d. 填写上面的配置项
+#    e. 启动 Webhook 服务器
+#    f. 在企业微信后台验证 URL
+#
+# 2. 配置示例:
+#    wechat_work:
+#      corp_id: "ww1234567890abcdef"
+#      agent_id: "123456"
+#      secret: "xxx-xxx-xxx-xxx-xxx-xxx"
+#      token: "abc123"
+#      encoding_aes_key: "base64_encoded_key_here"
+#      to_user: "@all"
+#      enable_confirm_button: false
+#
+# 3. 验证配置:
+#    - 启动 Webhook 服务器: ./start_webhook.sh
+#    - 在企业微信后台保存配置
+#    - 系统会自动验证 URL 是否可访问
+#    - 如果验证成功，显示"验证成功"
+#    - 如果验证失败，检查:
+#      * 服务器端口是否开放
+#      * Webhook 服务器是否启动
+#      * URL 是否正确
+#      * 配置项是否填写正确
+#
+# 4. 测试通知:
+#    python3 -c "
+# import sys
+# sys.path.insert(0, 'src')
+# from wechat_api import WeChatWorkAPI
+# import yaml
+#
+# with open('config/config.yaml', 'r') as f:
+#     config = yaml.safe_load(f)
+#
+# wechat = WeChatWorkAPI(config['wechat_work'])
+# result = wechat.send_text('@all', '企业微信配置测试')
+# print(result)
+# "
+#
+# 5. 常见问题:
+#    - URL 验证失败: 检查防火墙，开放 5001 端口
+#    - Token 错误: 检查配置文件中的 token 字段
+#    - 加密失败: 检查 encoding_aes_key 是否正确
+#    - 消息发送失败: 检查 access_token 是否获取成功
+#    - 应用未授权: 检查应用可见范围，确保包含接收人
+#
+# =========================================
