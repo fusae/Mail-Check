@@ -19,6 +19,7 @@ from email_monitor import EmailMonitor
 from link_extractor import LinkExtractor
 from content_fetcher import ContentFetcher
 from sentiment_analyzer import SentimentAnalyzer
+from notifier import Notifier
 
 class SentimentMonitor:
     def __init__(self, config_path='config/config.yaml'):
@@ -34,6 +35,7 @@ class SentimentMonitor:
         self.link_extractor = LinkExtractor(self.config)
         self.content_fetcher = ContentFetcher(self.config)
         self.sentiment_analyzer = SentimentAnalyzer(self.config)
+        self.notifier = Notifier(self.config)
         
         # 初始化数据库
         self.db_path = self.config['runtime']['database_path']
@@ -94,6 +96,34 @@ class SentimentMonitor:
                 processed_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS sentiment_feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sentiment_id TEXT,
+                feedback_judgment BOOLEAN,
+                feedback_type TEXT,
+                feedback_text TEXT,
+                user_id TEXT,
+                feedback_time TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS feedback_queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sentiment_id TEXT,
+                user_id TEXT,
+                sent_time TEXT,
+                status TEXT DEFAULT 'pending',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_feedback_queue_user_status
+            ON feedback_queue (user_id, status, sent_time)
+        ''')
         
         conn.commit()
         conn.close()
@@ -151,6 +181,31 @@ class SentimentMonitor:
         conn.close()
         
         self.logger.info(f"负面舆情已保存到数据库")
+
+    def queue_feedback(self, sentiment_id, recipients):
+        """记录可反馈的舆情队列"""
+        if not sentiment_id:
+            return
+
+        if not recipients:
+            recipients = ['@all']
+        elif isinstance(recipients, str):
+            recipients = [recipients]
+
+        sent_time = datetime.now().isoformat()
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        for user_id in recipients:
+            cursor.execute('''
+                INSERT INTO feedback_queue (sentiment_id, user_id, sent_time)
+                VALUES (?, ?, ?)
+            ''', (sentiment_id, user_id, sent_time))
+
+        conn.commit()
+        conn.close()
+
+        self.logger.info("反馈队列已记录")
     
     def process_email(self, email_info):
         """处理单封邮件"""
@@ -219,6 +274,28 @@ class SentimentMonitor:
                     
                     # 保存到数据库
                     self.save_negative_sentiment(sentiment, hospital_name, analysis)
+
+                    # 发送通知并记录反馈队列
+                    sentiment_info = {
+                        'id': sentiment.get('id', ''),
+                        'source': sentiment.get('webName', '未知'),
+                        'title': sentiment.get('title', '无标题'),
+                        'reason': analysis.get('reason', ''),
+                        'severity': analysis.get('severity', 'medium'),
+                        'url': sentiment.get('url', '')
+                    }
+                    content = sentiment.get('allContent', '') or sentiment.get('content', '')
+                    notify_result = self.notifier.send(
+                        title="发现负面舆情",
+                        content=content,
+                        hospital_name=hospital_name,
+                        sentiment_info=sentiment_info
+                    )
+
+                    if isinstance(notify_result, dict) and notify_result.get('success'):
+                        recipients = notify_result.get('recipients')
+                        if recipients:
+                            self.queue_feedback(sentiment_info.get('id'), recipients)
                 else:
                     self.logger.info(f"  ✓ 非负面舆情: {analysis['reason']}")
             
