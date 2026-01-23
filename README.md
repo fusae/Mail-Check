@@ -51,19 +51,42 @@ playwright install chromium
 
 ### 2. 配置系统
 
-编辑 `config/config.yaml`：
+复制配置模板并修改敏感信息：
+
+```bash
+# 复制配置模板
+cp config/config.yaml.example config/config.yaml
+
+# 编辑配置文件
+vim config/config.yaml  # 或使用其他编辑器
+```
+
+**需要修改的关键配置：**
 
 ```yaml
-# Gmail配置
+# 邮箱配置
 email:
-  imap_server: "imap.gmail.com"
-  email_address: "你的邮箱"
-  app_password: "应用专用密码"
-  
-# 智谱AI配置
+  imap_server: "imap.qq.com"  # 或 imap.gmail.com
+  email_address: "your_email@qq.com"
+  app_password: "your_app_password"  # 应用专用密码
+
+# 通知配置（选择一个）
+notification:
+  provider: "wechat_work"  # 或 "telegram"
+  wechat_work:
+    webhook_url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_WEBHOOK_KEY"
+  telegram:
+    bot_token: "YOUR_BOT_TOKEN"
+    chat_id: "YOUR_CHAT_ID"
+
+# AI配置
 ai:
-  api_key: "你的API Key"
-  model: "glm-4"
+  api_key: "YOUR_API_KEY"  # 智谱AI API密钥
+
+# 反馈服务配置
+feedback:
+  link_base_url: "http://your-server:5002/feedback"
+  link_secret: "CHANGE_THIS_TO_RANDOM_SECRET"
 ```
 
 ## 运行方法
