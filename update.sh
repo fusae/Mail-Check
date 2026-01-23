@@ -164,8 +164,13 @@ check_dependencies() {
 
     if [ -f "requirements.txt" ] && [ -d "venv" ]; then
         source venv/bin/activate
-        pip install -r requirements.txt -q > /dev/null 2>&1 || true
-        log_success "依赖检查完成"
+        log_info "正在安装/更新依赖..."
+        if pip install -r requirements.txt; then
+            log_success "依赖检查完成"
+        else
+            log_error "依赖安装失败，请手动安装"
+            log_info "手动安装命令: source venv/bin/activate && pip install -r requirements.txt"
+        fi
     else
         log_warn "虚拟环境不存在，跳过依赖检查"
     fi
