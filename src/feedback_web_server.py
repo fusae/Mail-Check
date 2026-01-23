@@ -98,7 +98,7 @@ def get_sentiment_info(sentiment_id):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('''
-        SELECT hospital_name, title, source, content, reason, severity
+        SELECT hospital_name, title, source, content, reason, severity, url
         FROM negative_sentiments
         WHERE sentiment_id = ?
     ''', (sentiment_id,))
@@ -112,7 +112,8 @@ def get_sentiment_info(sentiment_id):
             'source': result[2],
             'content': result[3],
             'reason': result[4],
-            'severity': result[5]
+            'severity': result[5],
+            'url': result[6] if len(result) > 6 else ''
         }
     return None
 
@@ -240,6 +241,7 @@ def feedback_form():
         content = sentiment_info['content'] or ''
         reason = sentiment_info['reason'] or ''
         severity = sentiment_info['severity'] or 'medium'
+        url = sentiment_info.get('url', '')
         
         severity_colors = {
             'high': '#ff4d4f',
@@ -276,6 +278,10 @@ def feedback_form():
           <div class="info-row">
             <span class="label">标题：</span>
             <span class="value">{title}</span>
+          </div>
+          <div class="info-row">
+            <span class="label">原文链接：</span>
+            <span class="value"><a href="{url}" target="_blank" style="color: #1890ff;">{url or '无'}</a></span>
           </div>
           <div class="info-row">
             <span class="label">内容：</span>

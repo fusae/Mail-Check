@@ -94,9 +94,17 @@ class SentimentMonitor:
                 content TEXT,
                 reason TEXT,
                 severity TEXT,
+                url TEXT,
                 processed_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+        
+        # 添加 url 字段（如果表已存在）
+        cursor.execute("PRAGMA table_info(negative_sentiments)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if 'url' not in columns:
+            cursor.execute('ALTER TABLE negative_sentiments ADD COLUMN url TEXT')
+            self.logger.info("数据库表结构已升级：添加 url 字段")
 
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS sentiment_feedback (
@@ -188,8 +196,8 @@ class SentimentMonitor:
         
         cursor.execute('''
             INSERT INTO negative_sentiments 
-            (sentiment_id, hospital_name, title, source, content, reason, severity)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (sentiment_id, hospital_name, title, source, content, reason, severity, url)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             sentiment.get('id', ''),
             hospital_name,
@@ -197,7 +205,8 @@ class SentimentMonitor:
             sentiment.get('webName', ''),
             sentiment.get('ocrData') or sentiment.get('allContent', ''),
             analysis['reason'],
-            analysis['severity']
+            analysis['severity'],
+            sentiment.get('url', '')
         ))
         
         conn.commit()
