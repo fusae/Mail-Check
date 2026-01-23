@@ -346,14 +346,72 @@ AI判断: {reason}
                 self.logger.warning("企业微信Webhook URL未配置")
                 return self._print_to_console(title, content, hospital_name, sentiment_info)
 
+            # 企业微信 Markdown 内容限制 4096 字符
+            MAX_LENGTH = 4096
+            BUFFER = 100  # 预留缓冲
+
+            # 先构建消息（包含完整反馈链接）
+            sentiment_id = sentiment_info.get('id') or sentiment_info.get('sentiment_id')
+            feedback_url = self._build_feedback_url(sentiment_id)
+            feedback_line = f"\n**反馈链接：** {feedback_url}\n" if feedback_url else ""
+
+            # 构建固定部分（不包括内容）
+            source = sentiment_info.get('source', '未知')
+            sent_title = sentiment_info.get('title', '无标题')
+            reason = sentiment_info.get('reason', '未判断')
+            severity = sentiment_info.get('severity', 'medium')
+
+            # 固定文本模板（内容部分用占位符）
+            header = f"""### ⚠️ 舆情监控通知
+
+**{title}**
+
+> **医院：** {hospital_name}
+> **来源：** {source}
+> **标题：** {sent_title}
+> **AI判断：** {reason}
+> **严重程度：** {severity}
+{feedback_line}
+
+**详细内容：**
+
+"""
+            footer = """
+
+请及时查看详情。
+"""
+
+            # 计算可用空间
+            fixed_length = len(header) + len(footer)
+            available_space = MAX_LENGTH - fixed_length - BUFFER
+
+            # 截断内容
+            if len(content) > available_space:
+                # 精确计算截断后的内容长度，确保加上提示后不超过限制
+                content_max_len = max(0, available_space - 20)  # 为提示与换行预留
+                truncated_content = content[:content_max_len] + "\n...（内容过长已截断，点击反馈链接查看完整信息）"
+                self.logger.warning(f"内容超限（{len(content)}字符），截断为 {len(truncated_content)} 字符，保留反馈链接")
+            else:
+                truncated_content = content
+
+            # 构建最终消息
+            markdown_content = header + truncated_content + footer
+
+            # 最终验证并兜底
+            final_length = len(markdown_content)
+            if final_length > MAX_LENGTH:
+                # 强制截断，确保不超过 MAX_LENGTH - 3（为了加 "..."）
+                markdown_content = markdown_content[:MAX_LENGTH - 3] + "..."
+                self.logger.warning(f"最终长度 {final_length} 仍超限，强制截断到 {len(markdown_content)} 字符")
+
             markdown_msg = {
                 "msgtype": "markdown",
                 "markdown": {
-                    "content": self._format_wechat_markdown(title, content, hospital_name, sentiment_info)
+                    "content": markdown_content
                 }
             }
 
-            self.logger.info("发送企业微信通知（Webhook）...")
+            self.logger.info(f"发送企业微信通知（Webhook），内容长度: {len(markdown_content)} 字符")
             response = requests.post(webhook_url, json=markdown_msg, timeout=10)
             result = response.json()
 

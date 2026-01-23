@@ -30,7 +30,7 @@ def load_config():
 
 
 config = load_config()
-feedback_config = config.get('feedback', {})
+feedback_config = config.get('runtime', {}).get('feedback', {})
 DB_PATH = config.get('runtime', {}).get(
     'database_path',
     os.path.join(project_root, 'data', 'processed_emails.db')
@@ -92,6 +92,29 @@ def _ensure_column(cursor, table_name, column_name, column_def):
     columns = {row[1] for row in cursor.fetchall()}
     if column_name not in columns:
         cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_def}")
+
+
+def get_sentiment_info(sentiment_id):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT hospital_name, title, source, content, reason, severity
+        FROM negative_sentiments
+        WHERE sentiment_id = ?
+    ''', (sentiment_id,))
+    result = cursor.fetchone()
+    conn.close()
+    
+    if result:
+        return {
+            'hospital_name': result[0],
+            'title': result[1],
+            'source': result[2],
+            'content': result[3],
+            'reason': result[4],
+            'severity': result[5]
+        }
+    return None
 
 
 def verify_signature(sentiment_id, ts, sig):
@@ -208,32 +231,127 @@ def feedback_form():
     if not verify_signature(sentiment_id, ts, sig):
         return "Invalid or expired link.", 403
 
+    sentiment_info = get_sentiment_info(sentiment_id)
+    
+    if sentiment_info:
+        hospital_name = sentiment_info['hospital_name'] or ''
+        title = sentiment_info['title'] or ''
+        source = sentiment_info['source'] or ''
+        content = sentiment_info['content'] or ''
+        reason = sentiment_info['reason'] or ''
+        severity = sentiment_info['severity'] or 'medium'
+        
+        severity_colors = {
+            'high': '#ff4d4f',
+            'medium': '#faad14',
+            'low': '#52c41a'
+        }
+        severity_label = {
+            'high': '高',
+            'medium': '中',
+            'low': '低'
+        }
+        severity_color = severity_colors.get(severity, '#faad14')
+        severity_text = severity_label.get(severity, '中')
+        
+        info_section = f"""
+        <div class="info-section">
+          <h4>舆情详情</h4>
+          <div class="info-row">
+            <span class="label">舆情ID：</span>
+            <span class="value">{sentiment_id}</span>
+          </div>
+          <div class="info-row">
+            <span class="label">医院：</span>
+            <span class="value">{hospital_name}</span>
+          </div>
+          <div class="info-row">
+            <span class="label">来源：</span>
+            <span class="value">{source}</span>
+          </div>
+          <div class="info-row">
+            <span class="label">严重程度：</span>
+            <span class="value" style="color: {severity_color}; font-weight: bold;">{severity_text}</span>
+          </div>
+          <div class="info-row">
+            <span class="label">标题：</span>
+            <span class="value">{title}</span>
+          </div>
+          <div class="info-row">
+            <span class="label">内容：</span>
+            <span class="value">{content}</span>
+          </div>
+          <div class="info-row">
+            <span class="label">AI判断：</span>
+            <span class="value">{reason}</span>
+          </div>
+        </div>
+        """
+    else:
+        info_section = f"""
+        <div class="info-section" style="background: #fffbe6; border-color: #ffe58f;">
+          <h4>舆情详情</h4>
+          <p style="color: #faad14;">⚠️ 测试数据（未存入数据库）</p>
+          <div class="info-row">
+            <span class="label">舆情ID：</span>
+            <span class="value">{sentiment_id}</span>
+          </div>
+          <div class="info-row">
+            <span class="label">说明：</span>
+            <span class="value">此舆情数据为测试生成，未存入数据库。如需测试完整功能，请通过实际监控产生舆情数据。</span>
+          </div>
+        </div>
+        """
+
     return f"""<!DOCTYPE html>
 <html lang="zh">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>舆情反馈</title>
   <style>
-    body {{ font-family: Arial, sans-serif; padding: 24px; }}
-    .container {{ max-width: 520px; margin: 0 auto; }}
-    textarea {{ width: 100%; height: 120px; }}
-    .btn {{ padding: 10px 16px; margin-right: 8px; }}
+    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 24px; background: #f5f5f5; margin: 0; }}
+    .container {{ max-width: 640px; margin: 0 auto; background: white; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); padding: 32px; }}
+    h3 {{ margin-top: 0; color: #333; border-bottom: 2px solid #1890ff; padding-bottom: 12px; }}
+    h4 {{ margin: 0 0 16px 0; color: #1890ff; font-size: 16px; }}
+    .info-section {{ background: #f0f7ff; border: 1px solid #d6e4ff; border-radius: 6px; padding: 16px; margin-bottom: 24px; }}
+    .info-row {{ margin-bottom: 12px; display: flex; align-items: flex-start; }}
+    .info-row:last-child {{ margin-bottom: 0; }}
+    .label {{ font-weight: 600; color: #595959; min-width: 80px; flex-shrink: 0; }}
+    .value {{ color: #262626; flex: 1; word-break: break-word; }}
+    textarea {{ width: 100%; height: 100px; padding: 12px; border: 1px solid #d9d9d9; border-radius: 4px; font-size: 14px; font-family: inherit; resize: vertical; box-sizing: border-box; }}
+    textarea:focus {{ outline: none; border-color: #1890ff; box-shadow: 0 0 0 2px rgba(24,144,255,0.2); }}
+    .btn-group {{ margin-top: 20px; display: flex; gap: 12px; }}
+    .btn {{ padding: 10px 24px; font-size: 14px; font-weight: 500; border: none; border-radius: 4px; cursor: pointer; transition: all 0.3s; }}
+    .btn-false {{ background: #52c41a; color: white; }}
+    .btn-false:hover {{ background: #73d13d; }}
+    .btn-true {{ background: #ff4d4f; color: white; }}
+    .btn-true:hover {{ background: #ff7875; }}
+    label {{ font-weight: 600; color: #333; display: block; margin-bottom: 8px; }}
   </style>
 </head>
 <body>
   <div class="container">
     <h3>舆情反馈</h3>
-    <p>舆情ID: {sentiment_id}</p>
-    <form method="post" action="/feedback">
+    {info_section}
+    <label>补充说明（可选）：</label>
+    <textarea name="feedback_text" placeholder="例如：误报，内容与医院无关"></textarea>
+    <form method="post" action="/feedback" style="margin-top: 20px;">
       <input type="hidden" name="sentiment_id" value="{sentiment_id}">
       <input type="hidden" name="ts" value="{ts}">
       <input type="hidden" name="sig" value="{sig}">
-      <label>补充说明（可选）：</label><br>
-      <textarea name="feedback_text" placeholder="例如：误报，价格单与医院无关"></textarea><br><br>
-      <button class="btn" type="submit" name="judgment" value="false">误判舆情</button>
-      <button class="btn" type="submit" name="judgment" value="true">确认负面</button>
+      <input type="hidden" name="feedback_text" id="feedback_text_hidden">
+      <div class="btn-group">
+        <button class="btn btn-false" type="submit" name="judgment" value="false">✓ 误判舆情</button>
+        <button class="btn btn-true" type="submit" name="judgment" value="true">✗ 确认负面</button>
+      </div>
     </form>
   </div>
+  <script>
+    document.querySelector('textarea').addEventListener('input', function() {{
+      document.getElementById('feedback_text_hidden').value = this.value;
+    }});
+  </script>
 </body>
 </html>
 """
