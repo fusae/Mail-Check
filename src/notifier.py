@@ -105,6 +105,7 @@ class Notifier:
 **来源：** {sentiment_info.get('source', '未知')}
 **AI判断：** {sentiment_info.get('reason', '未判断')}
 **严重程度：** {sentiment_info.get('severity', 'medium')}
+{f"**原文链接：** [{sentiment_info.get('url', '')}]({sentiment_info.get('url', '')})" if sentiment_info.get('url') else ""}
 
 **详细内容：**
 {content}
@@ -169,6 +170,14 @@ class Notifier:
                      '#6c757d' if sentiment_info.get('severity') == 'low' else '#95a5a6'}">
                 {sentiment_info.get('severity', 'medium')}
                 </span>
+            </td>
+        </tr>
+        <tr>
+            <td style="padding: 12px; border: 1px solid #dee2e6; font-weight: bold;">
+                原文链接
+            </td>
+            <td style="padding: 0px; border: 1px solid #dee2e6;">
+                {f'<a href="{sentiment_info.get("url", "")}">{sentiment_info.get("url", "无")}</a>' if sentiment_info.get('url') else '无'}
             </td>
         </tr>
         <tr>
@@ -360,6 +369,7 @@ AI判断: {reason}
             sent_title = sentiment_info.get('title', '无标题')
             reason = sentiment_info.get('reason', '未判断')
             severity = sentiment_info.get('severity', 'medium')
+            url = sentiment_info.get('url', '')
 
             # 固定文本模板（内容部分用占位符）
             header = f"""### ⚠️ 舆情监控通知
@@ -371,6 +381,7 @@ AI判断: {reason}
 > **标题：** {sent_title}
 > **AI判断：** {reason}
 > **严重程度：** {severity}
+{f"**原文链接：** [{url}]({url})\n" if url else ""}
 {feedback_line}
 
 **详细内容：**
