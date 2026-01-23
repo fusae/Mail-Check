@@ -30,7 +30,7 @@ def load_config():
 
 
 config = load_config()
-feedback_config = config.get('runtime', {}).get('feedback', {})
+feedback_config = config.get('feedback', {})
 DB_PATH = config.get('runtime', {}).get(
     'database_path',
     os.path.join(project_root, 'data', 'processed_emails.db')

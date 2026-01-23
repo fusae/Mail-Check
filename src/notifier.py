@@ -372,6 +372,9 @@ AI判断: {reason}
             url = sentiment_info.get('url', '')
 
             # 固定文本模板（内容部分用占位符）
+            # 原文链接和反馈链接单独构建，避免在 f-string 表达式里使用转义字符（会导致 SyntaxError）
+            orig_link_line = f"**原文链接：** [{url}]({url})\n" if url else ""
+
             header = f"""### ⚠️ 舆情监控通知
 
 **{title}**
@@ -381,8 +384,7 @@ AI判断: {reason}
 > **标题：** {sent_title}
 > **AI判断：** {reason}
 > **严重程度：** {severity}
-{("**原文链接：** [{url}]({url})\n" if url else "")}
-{feedback_line}
+{orig_link_line}{feedback_line}
 
 **详细内容：**
 
