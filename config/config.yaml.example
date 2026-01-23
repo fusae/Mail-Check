@@ -1,0 +1,70 @@
+# Email Configuration
+email:
+  imap_server: "imap.qq.com"
+  imap_port: 993
+  email_address: "your_email@qq.com"
+  app_password: "your_app_password"
+
+  # Email Rules
+  rules:
+    sender: "sender@example.com"
+    subject_pattern: "新增.*条舆情信息"
+
+# Notification Configuration
+notification:
+  provider: "wechat_work"
+
+  # Enterprise WeChat Configuration
+  wechat_work:
+    webhook_url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_WEBHOOK_KEY"
+
+  # Telegram Configuration (backup)
+  telegram:
+    bot_token: "YOUR_BOT_TOKEN"
+    chat_id: "YOUR_CHAT_ID"  # Telegram群组ID（注意负数）
+    message_prefix: "【舆情监控】"
+    enable_html: true  # 启用HTML格式
+    enable_markdown: true  # 启用Markdown格式
+    enable_preview: true  # 启用链接预览
+
+  # Optional: ServerChan backup (send to both)
+  # serverchan:
+  #   sendkey: "YOUR_SERVERCHAN_SENDKEY"
+
+# AI Configuration
+ai:
+  provider: "zhipu"
+  model: "glm-4"
+  api_key: "YOUR_API_KEY"
+  api_url: "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+
+  # AI Judgment Parameters
+  temperature: 0.3
+  max_tokens: 500
+
+# Sentiment API Configuration
+sentiment:
+  base_url: "https://console.microvivid.com/prod-api/system"
+  negative_prob_threshold: 0.7
+
+# Runtime Configuration
+runtime:
+  check_interval: 300
+  log_level: "DEBUG"
+  log_file: "logs/sentiment_monitor.log"
+  database_path: "data/processed_emails.db"
+
+# Feedback Configuration
+feedback:
+  enable_rules: true
+  enable_few_shot: true
+  rules_min_confidence: 0.7
+  max_few_shot: 5
+  link_base_url: "http://your-server:5002/feedback"
+  link_secret: "CHANGE_THIS_TO_RANDOM_SECRET"
+  link_expiry_seconds: 86400
+
+# Browser Configuration
+browser:
+  headless: true
+  timeout: 30000
