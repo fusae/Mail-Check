@@ -381,7 +381,7 @@ AI判断: {reason}
 > **标题：** {sent_title}
 > **AI判断：** {reason}
 > **严重程度：** {severity}
-{f"**原文链接：** [{url}]({url})\n" if url else ""}
+{("**原文链接：** [{url}]({url})\n" if url else "")}
 {feedback_line}
 
 **详细内容：**
