@@ -10,7 +10,6 @@ import hmac
 import os
 import re
 import sqlite3
-import time
 from datetime import datetime
 
 from flask import Flask, request
@@ -118,26 +117,16 @@ def get_sentiment_info(sentiment_id):
     return None
 
 
-def verify_signature(sentiment_id, ts, sig):
+def verify_signature(sentiment_id, sig):
     secret = feedback_config.get('link_secret', '')
     if not secret:
         return False
 
-    message = f"{sentiment_id}:{ts}".encode('utf-8')
+    message = f"{sentiment_id}".encode('utf-8')
     expected = hmac.new(secret.encode('utf-8'), message, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, sig or ''):
         return False
-
-    expiry = int(feedback_config.get('link_expiry_seconds', 7 * 24 * 3600))
-    if expiry <= 0:
-        return True
-
-    try:
-        ts_int = int(ts)
-    except (TypeError, ValueError):
-        return False
-
-    return (time.time() - ts_int) <= expiry
+    return True
 
 
 def save_feedback(data):
@@ -226,10 +215,9 @@ def save_feedback_rules(feedback_id, rules, action):
 @app.route('/feedback', methods=['GET'])
 def feedback_form():
     sentiment_id = request.args.get('sentiment_id', '')
-    ts = request.args.get('ts', '')
     sig = request.args.get('sig', '')
 
-    if not verify_signature(sentiment_id, ts, sig):
+    if not verify_signature(sentiment_id, sig):
         return "Invalid or expired link.", 403
 
     sentiment_info = get_sentiment_info(sentiment_id)
@@ -344,7 +332,6 @@ def feedback_form():
     <textarea name="feedback_text" placeholder="例如：误报，内容与医院无关"></textarea>
     <form method="post" action="/feedback" style="margin-top: 20px;">
       <input type="hidden" name="sentiment_id" value="{sentiment_id}">
-      <input type="hidden" name="ts" value="{ts}">
       <input type="hidden" name="sig" value="{sig}">
       <input type="hidden" name="feedback_text" id="feedback_text_hidden">
       <div class="btn-group">
@@ -366,12 +353,11 @@ def feedback_form():
 @app.route('/feedback', methods=['POST'])
 def submit_feedback():
     sentiment_id = request.form.get('sentiment_id', '')
-    ts = request.form.get('ts', '')
     sig = request.form.get('sig', '')
     judgment = request.form.get('judgment', '')
     feedback_text = (request.form.get('feedback_text') or '').strip()
 
-    if not verify_signature(sentiment_id, ts, sig):
+    if not verify_signature(sentiment_id, sig):
         return "Invalid or expired link.", 403
 
     if judgment not in ('true', 'false'):

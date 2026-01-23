@@ -10,7 +10,6 @@ import hmac
 import json
 import logging
 import os
-import time
 from urllib.parse import urlencode
 
 import requests
@@ -307,13 +306,11 @@ AI判断: {reason}
         if not base_url or not secret or not sentiment_id:
             return None
 
-        ts = int(time.time())
-        message = f"{sentiment_id}:{ts}".encode('utf-8')
+        message = f"{sentiment_id}".encode('utf-8')
         sig = hmac.new(secret.encode('utf-8'), message, hashlib.sha256).hexdigest()
 
         query = urlencode({
             'sentiment_id': sentiment_id,
-            'ts': ts,
             'sig': sig
         })
 
@@ -327,7 +324,7 @@ AI判断: {reason}
         reason = sentiment_info.get('reason', '未判断')
         severity = sentiment_info.get('severity', 'medium')
         feedback_url = self._build_feedback_url(sentiment_id)
-        feedback_line = f"\n**反馈链接：** {feedback_url}\n" if feedback_url else ""
+        feedback_line = f"\n**反馈链接：** [点击反馈]({feedback_url})\n" if feedback_url else ""
 
         return f"""### ⚠️ 舆情监控通知
 
@@ -338,12 +335,12 @@ AI判断: {reason}
 > **标题：** {sent_title}
 > **AI判断：** {reason}
 > **严重程度：** {severity}
-{feedback_line}
-
 **详细内容：**
 {content}
 
 请及时查看详情。
+
+{feedback_line}
 """
 
     def _send_via_wechat_work_webhook(self, title, content, hospital_name, sentiment_info):
@@ -362,7 +359,7 @@ AI判断: {reason}
             # 先构建消息（包含完整反馈链接）
             sentiment_id = sentiment_info.get('id') or sentiment_info.get('sentiment_id')
             feedback_url = self._build_feedback_url(sentiment_id)
-            feedback_line = f"\n**反馈链接：** {feedback_url}\n" if feedback_url else ""
+            feedback_line = f"\n**反馈链接：** [点击反馈]({feedback_url})\n" if feedback_url else ""
 
             # 构建固定部分（不包括内容）
             source = sentiment_info.get('source', '未知')
@@ -375,24 +372,8 @@ AI判断: {reason}
             # 原文链接和反馈链接单独构建，避免在 f-string 表达式里使用转义字符（会导致 SyntaxError）
             orig_link_line = f"**原文链接：** [{url}]({url})\n" if url else ""
 
-            header = f"""### ⚠️ 舆情监控通知
-
-**{title}**
-
-> **医院：** {hospital_name}
-> **来源：** {source}
-> **标题：** {sent_title}
-> **AI判断：** {reason}
-> **严重程度：** {severity}
-{orig_link_line}{feedback_line}
-
-**详细内容：**
-
-"""
-            footer = """
-
-请及时查看详情。
-"""
+            header = f"### ⚠️ 舆情监控通知\n\n**{title}**\n\n> **医院：** {hospital_name}\n> **来源：** {source}\n> **标题：** {sent_title}\n> **AI判断：** {reason}\n> **严重程度：** {severity}\n{orig_link_line}\n**详细内容：**\n\n"
+            footer = f"\n\n请及时查看详情。\n{feedback_line}"
 
             # 计算可用空间
             fixed_length = len(header) + len(footer)
