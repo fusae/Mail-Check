@@ -65,6 +65,7 @@ if [ "$1" == "--daemon" ] || [ "$1" == "-d" ]; then
         echo "查看日志:"
         echo "  实时日志: tail -f logs/sentiment_monitor.log"
         echo "  启动日志: tail -f logs/startup.log"
+        echo "  API日志: tail -f logs/api_server.log"
         echo ""
         echo "管理命令:"
         echo "  停止服务: ./stop.sh"
