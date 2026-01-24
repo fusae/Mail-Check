@@ -53,3 +53,7 @@ ms-playwright/
 *.egg-info/
 dist/
 build/
+
+# 前端
+node_modules/
+web/node_modules/
