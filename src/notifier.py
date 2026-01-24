@@ -27,8 +27,28 @@ class Notifier:
         self.serverchan = self.config.get('serverchan', {})
         self.wechat_work = self.config.get('wechat_work', {})
         self.dingtalk = self.config.get('dingtalk', {})
+        self.hospital_contacts, self.contact_mentions = self._load_hospital_contacts()
 
     
+    def _load_hospital_contacts(self):
+        contacts_file = self.config.get('hospital_contacts_file', 'config/hospital_contacts.yaml')
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        path = contacts_file if os.path.isabs(contacts_file) else os.path.join(base_dir, contacts_file)
+
+        if not os.path.exists(path):
+            self.logger.warning(f"医院联系人配置文件不存在: {path}")
+            return {}, {}
+
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = yaml.safe_load(f) or {}
+            hospitals = data.get('hospitals', {}) or {}
+            mentions = data.get('mentions', {}) or {}
+            return hospitals, mentions
+        except Exception as e:
+            self.logger.error(f"读取医院联系人配置失败: {e}")
+            return {}, {}
+
     def send(self, title, content, hospital_name=None, sentiment_info=None):
         """
         发送通知
@@ -411,6 +431,7 @@ AI判断: {reason}
 
             if result.get('errcode') == 0:
                 self.logger.info("✓ 企业微信通知发送成功")
+                self._send_wechat_mention(webhook_url, hospital_name, sentiment_info)
                 return {'success': True}
             else:
                 self.logger.error(f"✗ 企业微信通知失败: {result.get('errmsg', '未知错误')}")
@@ -422,6 +443,61 @@ AI判断: {reason}
         except Exception as e:
             self.logger.error(f"企业微信通知异常: {e}")
             return self._print_to_console(title, content, hospital_name, sentiment_info)
+
+    def _send_wechat_mention(self, webhook_url, hospital_name, sentiment_info):
+        """发送@提醒（仅 text 支持）"""
+        mention = self._resolve_mention(hospital_name)
+        if not mention:
+            return False
+
+        title = sentiment_info.get('title', '无标题')
+        name = mention.get('name', '')
+        content = f"@{name} 该医院有舆情需要关注：{hospital_name} | {title}"
+
+        payload = {
+            "msgtype": "text",
+            "text": {
+                "content": content,
+                "mentioned_list": mention.get('mentioned_list', []),
+                "mentioned_mobile_list": mention.get('mentioned_mobile_list', [])
+            }
+        }
+
+        try:
+            resp = requests.post(webhook_url, json=payload, timeout=10)
+            result = resp.json()
+            if result.get('errcode') == 0:
+                self.logger.info("✓ 企业微信@提醒发送成功")
+                return True
+            self.logger.warning(f"@提醒发送失败: {result.get('errmsg', '未知错误')}")
+        except Exception as e:
+            self.logger.warning(f"@提醒发送异常: {e}")
+        return False
+
+    def _resolve_mention(self, hospital_name):
+        monitor_name = self.hospital_contacts.get(hospital_name)
+        if not monitor_name:
+            return None
+
+        mention_info = self.contact_mentions.get(monitor_name, {}) or {}
+        userid = mention_info.get('wechat_userid') or mention_info.get('userid')
+        mobile = mention_info.get('wechat_mobile') or mention_info.get('mobile')
+
+        if userid:
+            return {
+                'name': monitor_name,
+                'mentioned_list': [userid],
+                'mentioned_mobile_list': []
+            }
+        if mobile:
+            return {
+                'name': monitor_name,
+                'mentioned_list': [],
+                'mentioned_mobile_list': [mobile]
+            }
+
+        self.logger.warning(f"未配置监控人员的企业微信ID/手机号: {monitor_name}")
+        return None
     
     def _send_via_dingtalk(self, title, content, hospital_name, sentiment_info):
         """通过钉钉发送（备用）"""
