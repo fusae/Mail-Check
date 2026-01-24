@@ -81,9 +81,9 @@ stop_services() {
         kill $pid 2>/dev/null || true
     done
 
-    FB_PID=$(pgrep -f "feedback_web_server")
-    if [ -n "$FB_PID" ]; then
-        kill $FB_PID 2>/dev/null || true
+    API_PID=$(pgrep -f "api_server.py")
+    if [ -n "$API_PID" ]; then
+        kill $API_PID 2>/dev/null || true
     fi
 
     sleep 2

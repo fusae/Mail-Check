@@ -85,7 +85,7 @@ ai:
 
 # 反馈服务配置
 feedback:
-  link_base_url: "http://your-server:5002/feedback"
+  link_base_url: "http://your-server:5003/feedback"
   link_secret: "CHANGE_THIS_TO_RANDOM_SECRET"
 ```
 

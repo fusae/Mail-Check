@@ -24,15 +24,15 @@ else
 fi
 echo ""
 
-# 2. 停止反馈服务
-echo -e "${BLUE}[2/2] 停止反馈服务...${NC}"
-FB_PID=$(pgrep -f "feedback_web_server")
-if [ -n "$FB_PID" ]; then
-    kill $FB_PID 2>/dev/null
+# 2. 停止API服务
+echo -e "${BLUE}[2/2] 停止API服务...${NC}"
+API_PID=$(pgrep -f "api_server.py")
+if [ -n "$API_PID" ]; then
+    kill $API_PID 2>/dev/null
     sleep 1
-    echo -e "${GREEN}✓ 已停止反馈服务${NC}"
+    echo -e "${GREEN}✓ 已停止API服务${NC}"
 else
-    echo -e "${YELLOW}✗ 反馈服务未运行${NC}"
+    echo -e "${YELLOW}✗ API服务未运行${NC}"
 fi
 
 echo ""

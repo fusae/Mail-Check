@@ -24,14 +24,14 @@ else
 fi
 echo ""
 
-# 2. 检查反馈服务
-echo -e "${BLUE}【反馈服务】${NC}"
-FB_PID=$(pgrep -f "feedback_web_server" | head -1)
-if [ -n "$FB_PID" ]; then
+# 2. 检查API服务
+echo -e "${BLUE}【API服务】${NC}"
+API_PID=$(pgrep -f "api_server.py" | head -1)
+if [ -n "$API_PID" ]; then
     echo -e "  状态: ${GREEN}运行中${NC}"
-    echo "  进程ID: $FB_PID"
-    echo "  端口: 5002"
-    echo -e "  访问: http://localhost:5002/feedback"
+    echo "  进程ID: $API_PID"
+    echo "  端口: 5003"
+    echo -e "  访问: http://localhost:5003/feedback"
 else
     echo -e "  状态: ${RED}未运行${NC}"
 fi
@@ -60,5 +60,5 @@ echo "常用命令:"
 echo "  一键启动: ./start_all.sh"
 echo "  一键停止: ./stop_all.sh"
 echo "  主程序日志: tail -f logs/sentiment_monitor.log"
-echo "  反馈服务日志: tail -f logs/feedback_web.log"
+echo "  API日志: tail -f logs/api_server.log"
 echo "==================================${NC}"
