@@ -51,6 +51,8 @@ def init_database():
             content TEXT,
             reason TEXT,
             severity TEXT,
+            status TEXT DEFAULT 'active',
+            dismissed_at TEXT,
             processed_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -82,6 +84,8 @@ def init_database():
     ''')
 
     _ensure_column(cursor, 'negative_sentiments', 'content', 'TEXT')
+    _ensure_column(cursor, 'negative_sentiments', 'status', 'TEXT')
+    _ensure_column(cursor, 'negative_sentiments', 'dismissed_at', 'TEXT')
     conn.commit()
     conn.close()
 
@@ -97,7 +101,7 @@ def get_sentiment_info(sentiment_id):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('''
-        SELECT hospital_name, title, source, content, reason, severity, url
+        SELECT hospital_name, title, source, content, reason, severity, url, status, dismissed_at
         FROM negative_sentiments
         WHERE sentiment_id = ?
     ''', (sentiment_id,))
@@ -112,7 +116,9 @@ def get_sentiment_info(sentiment_id):
             'content': result[3],
             'reason': result[4],
             'severity': result[5],
-            'url': result[6] if len(result) > 6 else ''
+            'url': result[6] if len(result) > 6 else '',
+            'status': result[7] if len(result) > 7 else 'active',
+            'dismissed_at': result[8] if len(result) > 8 else None
         }
     return None
 
@@ -154,9 +160,48 @@ def save_feedback(data):
 def delete_negative_sentiment(sentiment_id):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute('DELETE FROM negative_sentiments WHERE sentiment_id = ?', (sentiment_id,))
+    cursor.execute('''
+        UPDATE negative_sentiments
+        SET status = 'dismissed', dismissed_at = ?
+        WHERE sentiment_id = ?
+    ''', (datetime.now().isoformat(), sentiment_id))
     conn.commit()
     conn.close()
+
+
+def restore_negative_sentiment(sentiment_id):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        UPDATE negative_sentiments
+        SET status = 'active', dismissed_at = NULL
+        WHERE sentiment_id = ?
+    ''', (sentiment_id,))
+    conn.commit()
+    conn.close()
+
+
+def get_feedback_list(sentiment_id):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT feedback_time, feedback_type, feedback_text, user_id
+        FROM sentiment_feedback
+        WHERE sentiment_id = ?
+        ORDER BY created_at DESC
+        LIMIT 20
+    ''', (sentiment_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [
+        {
+            'feedback_time': row[0],
+            'feedback_type': row[1],
+            'feedback_text': row[2],
+            'user_id': row[3]
+        }
+        for row in rows
+    ]
 
 
 def extract_rule_candidates(text):
@@ -230,6 +275,9 @@ def feedback_form():
         reason = sentiment_info['reason'] or ''
         severity = sentiment_info['severity'] or 'medium'
         url = sentiment_info.get('url', '')
+        status = sentiment_info.get('status', 'active')
+        dismissed_at = sentiment_info.get('dismissed_at')
+        feedback_list = get_feedback_list(sentiment_id)
         
         severity_colors = {
             'high': '#ff4d4f',
@@ -244,6 +292,32 @@ def feedback_form():
         severity_color = severity_colors.get(severity, '#faad14')
         severity_text = severity_label.get(severity, '中')
         
+        feedback_items = ""
+        if feedback_list:
+            for item in feedback_list:
+                feedback_items += f"""
+                <div class="feedback-item">
+                  <div class="feedback-meta">{item['feedback_time']} | {item['feedback_type']} | {item['user_id']}</div>
+                  <div class="feedback-text">{item['feedback_text']}</div>
+                </div>
+                """
+        else:
+            feedback_items = "<div class=\"feedback-empty\">暂无反馈</div>"
+
+        status_line = ""
+        restore_button = ""
+        if status == 'dismissed':
+            dismissed_label = dismissed_at or '未知时间'
+            status_line = f"""
+          <div class="info-row">
+            <span class="label">状态：</span>
+            <span class="value" style="color: #52c41a; font-weight: bold;">已标记为误报（{dismissed_label}）</span>
+          </div>
+            """
+            restore_button = """
+      <button class="btn btn-restore" type="submit" name="action" value="restore">↺ 恢复为负面</button>
+            """
+
         info_section = f"""
         <div class="info-section">
           <h4>舆情详情</h4>
@@ -251,6 +325,7 @@ def feedback_form():
             <span class="label">舆情ID：</span>
             <span class="value">{sentiment_id}</span>
           </div>
+          {status_line}
           <div class="info-row">
             <span class="label">医院：</span>
             <span class="value">{hospital_name}</span>
@@ -279,6 +354,10 @@ def feedback_form():
             <span class="label">AI判断：</span>
             <span class="value">{reason}</span>
           </div>
+        </div>
+        <div class="feedback-section">
+          <h4>用户反馈</h4>
+          {feedback_items}
         </div>
         """
     else:
@@ -309,18 +388,26 @@ def feedback_form():
     h3 {{ margin-top: 0; color: #333; border-bottom: 2px solid #1890ff; padding-bottom: 12px; }}
     h4 {{ margin: 0 0 16px 0; color: #1890ff; font-size: 16px; }}
     .info-section {{ background: #f0f7ff; border: 1px solid #d6e4ff; border-radius: 6px; padding: 16px; margin-bottom: 24px; }}
+    .feedback-section {{ background: #fafafa; border: 1px solid #f0f0f0; border-radius: 6px; padding: 16px; margin-bottom: 24px; }}
+    .feedback-item {{ border-bottom: 1px solid #f0f0f0; padding: 10px 0; }}
+    .feedback-item:last-child {{ border-bottom: none; }}
+    .feedback-meta {{ color: #8c8c8c; font-size: 12px; margin-bottom: 6px; }}
+    .feedback-text {{ color: #262626; font-size: 14px; }}
+    .feedback-empty {{ color: #8c8c8c; font-size: 13px; }}
     .info-row {{ margin-bottom: 12px; display: flex; align-items: flex-start; }}
     .info-row:last-child {{ margin-bottom: 0; }}
     .label {{ font-weight: 600; color: #595959; min-width: 80px; flex-shrink: 0; }}
     .value {{ color: #262626; flex: 1; word-break: break-word; }}
     textarea {{ width: 100%; height: 100px; padding: 12px; border: 1px solid #d9d9d9; border-radius: 4px; font-size: 14px; font-family: inherit; resize: vertical; box-sizing: border-box; }}
     textarea:focus {{ outline: none; border-color: #1890ff; box-shadow: 0 0 0 2px rgba(24,144,255,0.2); }}
-    .btn-group {{ margin-top: 20px; display: flex; gap: 12px; }}
+    .btn-group {{ margin-top: 20px; display: flex; gap: 12px; flex-wrap: wrap; }}
     .btn {{ padding: 10px 24px; font-size: 14px; font-weight: 500; border: none; border-radius: 4px; cursor: pointer; transition: all 0.3s; }}
     .btn-false {{ background: #52c41a; color: white; }}
     .btn-false:hover {{ background: #73d13d; }}
     .btn-true {{ background: #ff4d4f; color: white; }}
     .btn-true:hover {{ background: #ff7875; }}
+    .btn-restore {{ background: #1890ff; color: white; }}
+    .btn-restore:hover {{ background: #40a9ff; }}
     label {{ font-weight: 600; color: #333; display: block; margin-bottom: 8px; }}
   </style>
 </head>
@@ -337,6 +424,7 @@ def feedback_form():
       <div class="btn-group">
         <button class="btn btn-false" type="submit" name="judgment" value="false">✓ 误判舆情</button>
         <button class="btn btn-true" type="submit" name="judgment" value="true">✗ 确认负面</button>
+        {restore_button}
       </div>
     </form>
   </div>
@@ -355,10 +443,22 @@ def submit_feedback():
     sentiment_id = request.form.get('sentiment_id', '')
     sig = request.form.get('sig', '')
     judgment = request.form.get('judgment', '')
+    action = request.form.get('action', '')
     feedback_text = (request.form.get('feedback_text') or '').strip()
 
     if not verify_signature(sentiment_id, sig):
         return "Invalid or expired link.", 403
+
+    if action == 'restore':
+        restore_negative_sentiment(sentiment_id)
+        save_feedback({
+            'sentiment_id': sentiment_id,
+            'feedback_judgment': True,
+            'feedback_type': 'restore_negative',
+            'feedback_text': feedback_text or '恢复为负面',
+            'user_id': request.remote_addr or 'web'
+        })
+        return "已恢复为负面，谢谢！"
 
     if judgment not in ('true', 'false'):
         return "Invalid feedback.", 400

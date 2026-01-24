@@ -95,6 +95,8 @@ class SentimentMonitor:
                 reason TEXT,
                 severity TEXT,
                 url TEXT,
+                status TEXT DEFAULT 'active',
+                dismissed_at TEXT,
                 processed_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         ''')
@@ -148,6 +150,8 @@ class SentimentMonitor:
         ''')
 
         self._ensure_column(cursor, 'negative_sentiments', 'content', 'TEXT')
+        self._ensure_column(cursor, 'negative_sentiments', 'status', 'TEXT')
+        self._ensure_column(cursor, 'negative_sentiments', 'dismissed_at', 'TEXT')
         
         conn.commit()
         conn.close()
