@@ -132,16 +132,21 @@ class SentimentAnalyzer:
     def _build_prompt(self, sentiment, hospital_name):
         """构建AI分析提示词"""
         title = sentiment.get('title', '')
-        content = sentiment.get('allContent', '')
+        content = sentiment.get('allContent', '') or sentiment.get('content', '')
         ocr_content = sentiment.get('ocrData', '')
         web_name = sentiment.get('webName', '未知')
         
-        # 优先使用OCR内容，因为可能更准确
-        text_content = ocr_content if ocr_content else content
+        # 同时提供正文与OCR，避免OCR过短导致误判
+        ocr_min_len = 50
+        ocr_note = ""
+        if ocr_content and len(ocr_content) < ocr_min_len:
+            ocr_note = "（OCR文本较短，仅供参考，不应作为主要判断依据）"
         
         # 限制内容长度
-        if len(text_content) > 1000:
-            text_content = text_content[:1000]
+        if len(content) > 1000:
+            content = content[:1000]
+        if len(ocr_content) > 1000:
+            ocr_content = ocr_content[:1000]
         
         feedback_context = self._build_feedback_context()
         rule_hints = self._build_rule_hints()
@@ -166,7 +171,8 @@ class SentimentAnalyzer:
 涉及医院: {hospital_name}
 来源: {web_name}
 标题: {title}
-内容: {text_content}
+用户正文（allContent）: {content}
+OCR文本（ocrData）: {ocr_content} {ocr_note}
 
 请返回JSON格式（只返回JSON，不要其他内容）:
 {{
