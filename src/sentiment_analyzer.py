@@ -260,8 +260,10 @@ OCR文本（ocrData）: {ocr_content} {ocr_note}
         if not text:
             return text
         cleaned = text.strip()
-        cleaned = re.sub(r"^```json\\s*|```$", "", cleaned, flags=re.IGNORECASE | re.MULTILINE).strip()
-        match = re.search(r"{[\\s\\S]*}", cleaned)
+        # 去掉 ```json ... ``` 包裹
+        cleaned = re.sub(r"^```(?:json)?\s*|```$", "", cleaned, flags=re.IGNORECASE | re.MULTILINE).strip()
+        # 提取第一个 JSON 对象
+        match = re.search(r"{[\s\S]*}", cleaned)
         return match.group(0) if match else cleaned
 
     def _apply_feedback_rules(self, sentiment):
