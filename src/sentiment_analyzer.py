@@ -39,7 +39,7 @@ class SentimentAnalyzer:
             return self._analyze_with_zhipu(sentiment, hospital_name)
         else:
             self.logger.warning(f"不支持的AI提供商: {self.provider}")
-            return self._default_analysis(sentiment)
+            return self._default_analysis(sentiment, error_reason=f"不支持的AI提供商: {self.provider}")
     
     def _analyze_with_zhipu(self, sentiment, hospital_name):
         """使用智谱AI分析"""
@@ -92,7 +92,7 @@ class SentimentAnalyzer:
                 # 验证返回格式
                 if 'is_negative' not in analysis:
                     self.logger.warning("AI返回格式不正确")
-                    return self._default_analysis(sentiment)
+                    return self._default_analysis(sentiment, error_reason="AI返回缺少is_negative字段")
                 
                 return {
                     'is_negative': analysis.get('is_negative', False),
@@ -109,7 +109,7 @@ class SentimentAnalyzer:
                     return {
                         'is_negative': True,
                         'actual_hospital': None,
-                        'reason': content[:100],
+                        'reason': f"AI返回非JSON（回退关键字判断）：{content[:100]}",
                         'severity': 'medium',
                         'confidence': 'low'
                     }
@@ -117,17 +117,17 @@ class SentimentAnalyzer:
                     return {
                         'is_negative': False,
                         'actual_hospital': None,
-                        'reason': content[:100],
+                        'reason': f"AI返回非JSON（回退关键字判断）：{content[:100]}",
                         'severity': 'low',
                         'confidence': 'low'
                     }
         
         except requests.exceptions.Timeout:
             self.logger.error("AI请求超时")
-            return self._default_analysis(sentiment)
+            return self._default_analysis(sentiment, error_reason="AI请求超时")
         except Exception as e:
             self.logger.error(f"AI分析失败: {e}")
-            return self._default_analysis(sentiment)
+            return self._default_analysis(sentiment, error_reason=f"AI分析失败: {e}")
     
     def _build_prompt(self, sentiment, hospital_name):
         """构建AI分析提示词"""
@@ -339,17 +339,22 @@ OCR文本（ocrData）: {ocr_content} {ocr_note}
             self.logger.error(f"读取反馈样本失败: {e}")
             return ''
     
-    def _default_analysis(self, sentiment):
+    def _default_analysis(self, sentiment, error_reason=None):
         """默认分析（当AI不可用时）"""
         attitude = sentiment.get('attitudeMerge', '')
         negative_prob = sentiment.get('negativeProbs', '0')
+
+        prefix = ""
+        if error_reason:
+            prefix = f"AI调用失败（{error_reason}），转用API判断；"
+            self.logger.warning(f"AI调用失败，转用API判断：{error_reason}")
         
         # 如果API已经标记为负面且概率较高
         if attitude == '-1' and float(negative_prob) > 0.7:
             return {
                 'is_negative': True,
                 'actual_hospital': None,
-                'reason': f"API标记为负面（概率:{negative_prob}）",
+                'reason': f"{prefix}API标记为负面（概率:{negative_prob}）",
                 'severity': 'medium',
                 'confidence': 'low'
             }
@@ -357,7 +362,7 @@ OCR文本（ocrData）: {ocr_content} {ocr_note}
             return {
                 'is_negative': False,
                 'actual_hospital': None,
-                'reason': "API未标记为负面或概率较低",
+                'reason': f"{prefix}API未标记为负面或概率较低（概率:{negative_prob}）",
                 'severity': 'low',
                 'confidence': 'low'
             }
