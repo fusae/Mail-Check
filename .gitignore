@@ -57,3 +57,10 @@ build/
 # 前端
 node_modules/
 web/node_modules/
+# 敏感配置文件 - 不应推送到远程
+config/hospital_contacts.yaml
+config/config.yaml.gmail_backup
+config/production.yaml
+*.env
+.env.local
+!.env.example
