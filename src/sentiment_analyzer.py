@@ -88,7 +88,7 @@ class SentimentAnalyzer:
             
             # 尝试解析JSON
             try:
-                analysis = json.loads(content)
+                analysis = json.loads(self._extract_json_block(content))
                 
                 # 验证返回格式
                 if 'is_negative' not in analysis:
@@ -164,7 +164,7 @@ class SentimentAnalyzer:
             self.logger.info(f"AI返回: {content}")
 
             try:
-                analysis = json.loads(content)
+                analysis = json.loads(self._extract_json_block(content))
                 if 'is_negative' not in analysis:
                     self.logger.warning("AI返回格式不正确")
                     return self._default_analysis(sentiment, error_reason="AI返回缺少is_negative字段")
@@ -254,6 +254,15 @@ OCR文本（ocrData）: {ocr_content} {ocr_note}
 }}"""
         
         return prompt
+
+    def _extract_json_block(self, text):
+        """从模型输出中提取JSON（兼容 ```json``` 代码块）"""
+        if not text:
+            return text
+        cleaned = text.strip()
+        cleaned = re.sub(r"^```json\\s*|```$", "", cleaned, flags=re.IGNORECASE | re.MULTILINE).strip()
+        match = re.search(r"{[\\s\\S]*}", cleaned)
+        return match.group(0) if match else cleaned
 
     def _apply_feedback_rules(self, sentiment):
         sentiment_id = sentiment.get('id')
