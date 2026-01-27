@@ -37,9 +37,10 @@ class SentimentAnalyzer:
 
         if self.provider == 'zhipu':
             return self._analyze_with_zhipu(sentiment, hospital_name)
-        else:
-            self.logger.warning(f"不支持的AI提供商: {self.provider}")
-            return self._default_analysis(sentiment, error_reason=f"不支持的AI提供商: {self.provider}")
+        if self.provider == 'deepseek':
+            return self._analyze_with_deepseek(sentiment, hospital_name)
+        self.logger.warning(f"不支持的AI提供商: {self.provider}")
+        return self._default_analysis(sentiment, error_reason=f"不支持的AI提供商: {self.provider}")
     
     def _analyze_with_zhipu(self, sentiment, hospital_name):
         """使用智谱AI分析"""
@@ -122,6 +123,77 @@ class SentimentAnalyzer:
                         'confidence': 'low'
                     }
         
+        except requests.exceptions.Timeout:
+            self.logger.error("AI请求超时")
+            return self._default_analysis(sentiment, error_reason="AI请求超时")
+        except Exception as e:
+            self.logger.error(f"AI分析失败: {e}")
+            return self._default_analysis(sentiment, error_reason=f"AI分析失败: {e}")
+
+    def _analyze_with_deepseek(self, sentiment, hospital_name):
+        """使用 DeepSeek 分析（OpenAI兼容）"""
+        try:
+            prompt = self._build_prompt(sentiment, hospital_name)
+
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}"
+            }
+
+            data = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": "你是一个专业的舆情分析助手。"},
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": self.temperature,
+                "max_tokens": self.max_tokens
+            }
+
+            self.logger.info("调用DeepSeek分析舆情...")
+            response = requests.post(
+                self.api_url,
+                headers=headers,
+                json=data,
+                timeout=30
+            )
+            response.raise_for_status()
+
+            result = response.json()
+            content = result['choices'][0]['message']['content']
+            self.logger.info(f"AI返回: {content}")
+
+            try:
+                analysis = json.loads(content)
+                if 'is_negative' not in analysis:
+                    self.logger.warning("AI返回格式不正确")
+                    return self._default_analysis(sentiment, error_reason="AI返回缺少is_negative字段")
+
+                return {
+                    'is_negative': analysis.get('is_negative', False),
+                    'actual_hospital': analysis.get('actual_hospital', None),
+                    'reason': analysis.get('reason', '未提供理由'),
+                    'severity': analysis.get('severity', 'medium'),
+                    'confidence': 'high'
+                }
+            except json.JSONDecodeError:
+                self.logger.warning("无法解析AI返回的JSON")
+                if '是负面' in content or 'true' in content.lower():
+                    return {
+                        'is_negative': True,
+                        'actual_hospital': None,
+                        'reason': f"AI返回非JSON（回退关键字判断）：{content[:100]}",
+                        'severity': 'medium',
+                        'confidence': 'low'
+                    }
+                return {
+                    'is_negative': False,
+                    'actual_hospital': None,
+                    'reason': f"AI返回非JSON（回退关键字判断）：{content[:100]}",
+                    'severity': 'low',
+                    'confidence': 'low'
+                }
+
         except requests.exceptions.Timeout:
             self.logger.error("AI请求超时")
             return self._default_analysis(sentiment, error_reason="AI请求超时")
