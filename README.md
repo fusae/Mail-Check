@@ -1,14 +1,17 @@
 # 舆情监控系统
 
-自动监控Gmail邮件，提取舆情数据，使用AI判断是否为负面舆情。
+自动监控IMAP邮件（如QQ邮箱），提取舆情数据，使用AI判断是否为负面舆情。
 
 ## 功能特性
 
 - ✅ 自动监控Gmail邮件
 - ✅ 提取舆情链接和数据
 - ✅ AI智能判断负面舆情
+- ✅ 负面舆情通知（企业微信/Telegram）
+- ✅ 反馈链接闭环（误报/确认）
 - ✅ 控制台实时输出
 - ✅ 数据库记录处理历史
+- ✅ API 服务与前端仪表盘（可选）
 
 ## 系统架构
 
@@ -16,13 +19,17 @@
 Mail_Check/
 ├── config/
 │   ├── config.yaml          # 配置文件
+│   ├── hospital_contacts.yaml # 医院负责人@配置
 │   └── hospitals.txt       # 医院名单（备用）
 ├── src/
 │   ├── email_monitor.py    # 邮件监控模块
 │   ├── link_extractor.py   # 链接提取模块
 │   ├── content_fetcher.py  # 内容获取模块
 │   ├── sentiment_analyzer.py # AI分析模块
+│   ├── notifier.py         # 通知模块
+│   ├── api_server.py       # API/反馈服务
 │   └── main.py            # 主程序
+├── web/                    # 前端仪表盘
 ├── logs/                   # 日志目录
 ├── data/                   # 数据目录
 │   └── processed_emails.db # SQLite数据库
@@ -64,7 +71,7 @@ vim config/config.yaml  # 或使用其他编辑器
 **需要修改的关键配置：**
 
 ```yaml
-# 邮箱配置
+# 邮箱配置（示例：QQ邮箱）
 email:
   imap_server: "imap.qq.com"  # 或 imap.gmail.com
   email_address: "your_email@qq.com"
@@ -73,6 +80,7 @@ email:
 # 通知配置（选择一个）
 notification:
   provider: "wechat_work"  # 或 "telegram"
+  hospital_contacts_file: "config/hospital_contacts.yaml"
   wechat_work:
     webhook_url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_WEBHOOK_KEY"
   telegram:
@@ -83,37 +91,33 @@ notification:
 ai:
   api_key: "YOUR_API_KEY"  # 智谱AI API密钥
 
-# 反馈服务配置
+# 反馈链接配置（用于误报反馈）
 feedback:
   link_base_url: "http://your-server:5003/feedback"
   link_secret: "CHANGE_THIS_TO_RANDOM_SECRET"
+
+# 医院负责人@配置（见 config/hospital_contacts.yaml）
 ```
 
 ## 运行方法
-
-### 测试单个模块
-
-```bash
-# 测试邮件监控
-cd src
-python email_monitor.py
-
-# 测试链接提取
-python link_extractor.py
-
-# 测试内容获取
-python content_fetcher.py
-
-# 测试AI分析
-python sentiment_analyzer.py
-```
 
 ### 运行主程序
 
 ```bash
 # 在项目根目录
-cd src
-python main.py
+python3 src/main.py
+```
+
+### 启动 API/反馈服务
+
+```bash
+python3 src/api_server.py
+```
+
+### 一键启动（主程序 + API）
+
+```bash
+./start_all.sh
 ```
 
 程序将：
@@ -155,7 +159,9 @@ SELECT * FROM negative_sentiments ORDER BY processed_at DESC;
 
 ## 日志
 
-日志文件：`logs/sentiment_monitor.log`
+日志文件：
+- `logs/sentiment_monitor.log`（主程序）
+- `logs/api_server.log`（API/反馈）
 
 查看日志：
 ```bash
@@ -164,7 +170,7 @@ tail -f logs/sentiment_monitor.log
 
 ## 故障排查
 
-### 连接Gmail失败
+### 连接邮箱失败
 - 检查应用专用密码是否正确
 - 确保开启了IMAP服务
 
@@ -194,10 +200,15 @@ runtime:
   log_level: "DEBUG"  # DEBUG, INFO, WARNING, ERROR
 ```
 
-## 后续开发
+## Web 仪表盘（可选）
 
-- [ ] 添加电话通知功能
-- [ ] 支持多医院监控
+前端在 `web/` 目录，生产部署需要：
+```bash
+cd web
+npm install
+npm run build
+```
+配合 Nginx 静态站点与 `/api`、`/feedback` 反代即可上线。
 - [ ] Web界面展示
 - [ ] 舆情趋势分析
 
