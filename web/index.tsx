@@ -537,7 +537,7 @@ const OpinionDashboard = () => {
       <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_top,_rgba(99,102,241,0.15),_transparent_55%),radial-gradient(circle_at_20%_30%,_rgba(249,115,22,0.08),_transparent_45%),radial-gradient(circle_at_80%_20%,_rgba(16,185,129,0.12),_transparent_40%)]" />
 
       <header className="relative z-10 border-b border-slate-800/70 bg-slate-950/80 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-5">
+        <div className="mx-auto flex max-w-7xl flex-col gap-4 px-6 py-5 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-center gap-4">
             <div className="rounded-2xl bg-indigo-500/20 p-3 shadow-[0_0_30px_rgba(99,102,241,0.35)]">
               <ShieldAlert className="h-6 w-6 text-indigo-300" />
@@ -550,7 +550,7 @@ const OpinionDashboard = () => {
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex w-full flex-col gap-3 lg:w-auto lg:flex-row lg:items-center">
             <div className="flex items-center gap-2 rounded-2xl border border-slate-800/60 bg-slate-900/60 px-3 py-2">
               <Calendar className="h-4 w-4 text-slate-400" />
               <select
@@ -564,7 +564,7 @@ const OpinionDashboard = () => {
               </select>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 onClick={() => setExportModalOpen(true)}
                 className="flex items-center gap-2 rounded-2xl border border-slate-800/60 bg-slate-900/60 px-4 py-2 text-sm text-slate-200 transition hover:bg-slate-800/80 hover:border-slate-700/80"
@@ -591,30 +591,32 @@ const OpinionDashboard = () => {
             </div>
           </div>
 
-          <form onSubmit={handleSearch} className="flex items-center gap-3">
-            <div className="relative">
+          <form onSubmit={handleSearch} className="flex w-full flex-col gap-3 lg:w-auto lg:flex-row lg:items-center">
+            <div className="relative w-full lg:w-auto">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
               <input
                 type="text"
                 placeholder="自然语言搜索：比如“产品质量投诉”"
-                className="w-80 rounded-2xl border border-slate-800/60 bg-slate-900/60 py-2.5 pl-10 pr-4 text-sm text-slate-200 outline-none transition focus:border-indigo-500/70"
+                className="w-full rounded-2xl border border-slate-800/60 bg-slate-900/60 py-2.5 pl-10 pr-4 text-sm text-slate-200 outline-none transition focus:border-indigo-500/70 lg:w-80"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
               />
             </div>
-            <button
-              type="submit"
-              className="rounded-2xl border border-indigo-500/40 bg-indigo-500/10 px-4 py-2 text-xs font-semibold uppercase tracking-wider text-indigo-200"
-            >
-              搜索
-            </button>
-            <button
-              type="button"
-              onClick={fetchData}
-              className="rounded-2xl border border-slate-800/70 p-2 text-slate-400 transition hover:bg-slate-900/70"
-            >
-              <RefreshCw className="h-4 w-4" />
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="submit"
+                className="rounded-2xl border border-indigo-500/40 bg-indigo-500/10 px-4 py-2 text-xs font-semibold uppercase tracking-wider text-indigo-200"
+              >
+                搜索
+              </button>
+              <button
+                type="button"
+                onClick={fetchData}
+                className="rounded-2xl border border-slate-800/70 p-2 text-slate-400 transition hover:bg-slate-900/70"
+              >
+                <RefreshCw className="h-4 w-4" />
+              </button>
+            </div>
           </form>
         </div>
       </header>
@@ -789,7 +791,7 @@ const OpinionDashboard = () => {
 
         <section className="col-span-12 lg:col-span-8 space-y-6">
           <div className="grid grid-cols-1 gap-6">
-            <div className="grid grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
               <div className="rounded-3xl border border-slate-800/70 bg-slate-900/50 p-6">
                 <div className="flex items-center justify-between">
                   <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400">渠道分布</h2>
