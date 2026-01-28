@@ -49,6 +49,22 @@ def load_config():
         return yaml.safe_load(f)
 
 
+def _get_config_path():
+    return os.path.join(project_root, 'config', 'config.yaml')
+
+
+def _read_config_file():
+    config_path = _get_config_path()
+    with open(config_path, 'r', encoding='utf-8') as f:
+        return yaml.safe_load(f) or {}
+
+
+def _write_config_file(cfg):
+    config_path = _get_config_path()
+    with open(config_path, 'w', encoding='utf-8') as f:
+        yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)
+
+
 config = load_config()
 DB_PATH = config.get('runtime', {}).get(
     'database_path',
@@ -811,6 +827,39 @@ def ai_insight():
     )
     text = call_ai(prompt)
     return jsonify({"text": text, "generated_at": datetime.now().isoformat()})
+
+
+@app.get("/api/notification/suppress_keywords")
+def get_suppress_keywords():
+    cfg = _read_config_file()
+    notification = cfg.get("notification", {}) or {}
+    wechat_cfg = notification.get("wechat_work", {}) or {}
+    keywords = wechat_cfg.get("suppress_keywords") or notification.get("suppress_keywords") or []
+    if isinstance(keywords, str):
+        keywords = [keywords]
+    keywords = [str(k).strip() for k in keywords if str(k).strip()]
+    return jsonify({"keywords": keywords})
+
+
+@app.post("/api/notification/suppress_keywords")
+def update_suppress_keywords():
+    payload = request.get_json(force=True) or {}
+    keywords = payload.get("keywords") or []
+    if isinstance(keywords, str):
+        keywords = [keywords]
+    cleaned = []
+    for k in keywords:
+        text = str(k).strip()
+        if text and text not in cleaned:
+            cleaned.append(text)
+
+    cfg = _read_config_file()
+    notification = cfg.setdefault("notification", {})
+    wechat_cfg = notification.setdefault("wechat_work", {})
+    wechat_cfg["suppress_keywords"] = cleaned
+
+    _write_config_file(cfg)
+    return jsonify({"success": True, "keywords": cleaned})
 
 
 @app.post("/api/reports")

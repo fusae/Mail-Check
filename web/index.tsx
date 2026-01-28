@@ -115,6 +115,11 @@ const OpinionDashboard = () => {
   const [reportHospital, setReportHospital] = useState("all");
   const [reportFormat, setReportFormat] = useState<"pdf" | "word">("pdf");
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
+  const [suppressModalOpen, setSuppressModalOpen] = useState(false);
+  const [suppressKeywords, setSuppressKeywords] = useState<string[]>([]);
+  const [newKeyword, setNewKeyword] = useState("");
+  const [suppressLoading, setSuppressLoading] = useState(false);
+  const [suppressSaving, setSuppressSaving] = useState(false);
 
   const fetchData = async () => {
     setIsLoading(true);
@@ -340,6 +345,52 @@ const OpinionDashboard = () => {
     setTooltipContent(null);
   };
 
+  const openSuppressModal = async () => {
+    setSuppressModalOpen(true);
+    setSuppressLoading(true);
+    try {
+      const resp = await fetch("/api/notification/suppress_keywords");
+      if (resp.ok) {
+        const data = await resp.json();
+        setSuppressKeywords(Array.isArray(data.keywords) ? data.keywords : []);
+      }
+    } catch (err) {
+      // ignore
+    } finally {
+      setSuppressLoading(false);
+    }
+  };
+
+  const addSuppressKeyword = () => {
+    const text = newKeyword.trim();
+    if (!text) return;
+    if (!suppressKeywords.includes(text)) {
+      setSuppressKeywords([...suppressKeywords, text]);
+    }
+    setNewKeyword("");
+  };
+
+  const removeSuppressKeyword = (keyword: string) => {
+    setSuppressKeywords(suppressKeywords.filter((k) => k !== keyword));
+  };
+
+  const saveSuppressKeywords = async () => {
+    setSuppressSaving(true);
+    try {
+      const resp = await fetch("/api/notification/suppress_keywords", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ keywords: suppressKeywords }),
+      });
+      if (!resp.ok) throw new Error("保存失败");
+      setSuppressModalOpen(false);
+    } catch (err) {
+      alert("保存失败，请检查后端接口。");
+    } finally {
+      setSuppressSaving(false);
+    }
+  };
+
   const exportToCSV = (data: OpinionItem[], filename: string) => {
     const headers = ['ID', '医院', '标题', '来源', '严重程度', '风险分', '状态', '创建时间', '警示理由', '内容', '原文链接'];
     const rows = data.map(item => [
@@ -520,6 +571,14 @@ const OpinionDashboard = () => {
               >
                 <Download className="h-4 w-4" />
                 <span>导出数据</span>
+              </button>
+
+              <button
+                onClick={openSuppressModal}
+                className="flex items-center gap-2 rounded-2xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-200 transition hover:bg-emerald-500/20"
+              >
+                <ShieldAlert className="h-4 w-4" />
+                <span>屏蔽关键词</span>
               </button>
 
               <button
@@ -1179,6 +1238,81 @@ const OpinionDashboard = () => {
                 {isGeneratingReport ? '生成中...' : '生成报告'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {suppressModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm" onClick={() => setSuppressModalOpen(false)} />
+          <div className="relative w-full max-w-md rounded-3xl border border-emerald-500/30 bg-slate-900/95 p-6 shadow-2xl">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-lg font-semibold">屏蔽关键词</h3>
+              <button onClick={() => setSuppressModalOpen(false)} className="rounded-full p-2 text-slate-400 hover:bg-slate-800">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {suppressLoading ? (
+              <div className="flex items-center gap-3 text-sm text-slate-400">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                正在加载...
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-300 mb-2">新增关键词</label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={newKeyword}
+                      onChange={(e) => setNewKeyword(e.target.value)}
+                      className="flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 focus:border-emerald-500 focus:outline-none"
+                      placeholder="例如：红包回扣"
+                    />
+                    <button
+                      type="button"
+                      onClick={addSuppressKeyword}
+                      className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-200 transition hover:bg-emerald-500/20"
+                    >
+                      添加
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-300 mb-2">当前关键词</label>
+                  {suppressKeywords.length === 0 ? (
+                    <p className="text-sm text-slate-500">暂无关键词</p>
+                  ) : (
+                    <div className="flex flex-wrap gap-2">
+                      {suppressKeywords.map((keyword) => (
+                        <span key={keyword} className="flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900/70 px-3 py-1 text-xs text-slate-200">
+                          {keyword}
+                          <button
+                            type="button"
+                            onClick={() => removeSuppressKeyword(keyword)}
+                            className="text-slate-400 hover:text-slate-200"
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="pt-4 border-t border-slate-800">
+                  <button
+                    onClick={saveSuppressKeywords}
+                    disabled={suppressSaving}
+                    className="w-full rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-sm font-medium text-emerald-200 transition hover:bg-emerald-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {suppressSaving ? "保存中..." : "保存并生效"}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

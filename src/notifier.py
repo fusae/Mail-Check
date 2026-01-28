@@ -27,6 +27,7 @@ class Notifier:
         self.serverchan = self.config.get('serverchan', {})
         self.wechat_work = self.config.get('wechat_work', {})
         self.dingtalk = self.config.get('dingtalk', {})
+        self.suppress_keywords = self._load_suppress_keywords()
         self.hospital_contacts, self.contact_mentions = self._load_hospital_contacts()
 
     
@@ -49,6 +50,52 @@ class Notifier:
             self.logger.error(f"读取医院联系人配置失败: {e}")
             return {}, {}
 
+    def _get_config_path(self):
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        return os.path.join(base_dir, 'config', 'config.yaml')
+
+    def _load_suppress_keywords(self):
+        keywords = []
+        raw_list = []
+
+        config_path = self._get_config_path()
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    cfg = yaml.safe_load(f) or {}
+                notification = cfg.get('notification', {}) or {}
+                wechat_cfg = notification.get('wechat_work', {}) or {}
+                raw_list = wechat_cfg.get('suppress_keywords') or notification.get('suppress_keywords') or []
+            except Exception as e:
+                self.logger.warning(f"读取屏蔽关键词失败，将使用内存配置: {e}")
+
+        if not raw_list:
+            raw_list = self.wechat_work.get('suppress_keywords') or self.config.get('suppress_keywords') or []
+        if isinstance(raw_list, str):
+            raw_list = [raw_list]
+        for item in raw_list:
+            if not item:
+                continue
+            text = str(item).strip()
+            if text:
+                keywords.append(text)
+        return keywords
+
+    def _should_suppress_wechat(self, content, sentiment_info):
+        # 运行时刷新关键词，确保网页端更新后即时生效
+        self.suppress_keywords = self._load_suppress_keywords()
+        if not self.suppress_keywords:
+            return False, ""
+        content = content or ""
+        title = (sentiment_info or {}).get('title', '') or ''
+        reason = (sentiment_info or {}).get('reason', '') or ''
+        source = (sentiment_info or {}).get('source', '') or ''
+        haystack = f"{title}\n{reason}\n{source}\n{content}"
+        for keyword in self.suppress_keywords:
+            if keyword in haystack:
+                return True, keyword
+        return False, ""
+
     def send(self, title, content, hospital_name=None, sentiment_info=None):
         """
         发送通知
@@ -67,6 +114,10 @@ class Notifier:
         elif self.provider == 'serverchan':
             result = self._send_via_serverchan(title, content, hospital_name, sentiment_info)
         elif self.provider == 'wechat_work':
+            suppressed, hit = self._should_suppress_wechat(content, sentiment_info)
+            if suppressed:
+                self.logger.info(f"命中屏蔽关键词，已跳过企业微信推送: {hit}")
+                return {'success': False, 'suppressed': True, 'keyword': hit}
             result = self._send_via_wechat_work(title, content, hospital_name, sentiment_info)
         elif self.provider == 'dingtalk':
             result = self._send_via_dingtalk(title, content, hospital_name, sentiment_info)
