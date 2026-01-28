@@ -83,6 +83,13 @@ const formatTime = (value: string) => {
   });
 };
 
+const formatDateInput = (date: Date) => {
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
 const OpinionDashboard = () => {
   const [opinions, setOpinions] = useState<OpinionItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -1247,7 +1254,7 @@ const OpinionDashboard = () => {
                   <div className="flex-1">
                     <DatePicker
                       selected={exportDateRange.start ? new Date(exportDateRange.start) : null}
-                      onChange={(date: Date | null) => setExportDateRange({ ...exportDateRange, start: date ? date.toISOString().split('T')[0] : "" })}
+                      onChange={(date: Date | null) => setExportDateRange({ ...exportDateRange, start: date ? formatDateInput(date) : "" })}
                       selectsStart
                       startDate={exportDateRange.start ? new Date(exportDateRange.start) : null}
                       endDate={exportDateRange.end ? new Date(exportDateRange.end) : null}
@@ -1260,7 +1267,7 @@ const OpinionDashboard = () => {
                   <div className="flex-1">
                     <DatePicker
                       selected={exportDateRange.end ? new Date(exportDateRange.end) : null}
-                      onChange={(date: Date | null) => setExportDateRange({ ...exportDateRange, end: date ? date.toISOString().split('T')[0] : "" })}
+                      onChange={(date: Date | null) => setExportDateRange({ ...exportDateRange, end: date ? formatDateInput(date) : "" })}
                       selectsEnd
                       startDate={exportDateRange.start ? new Date(exportDateRange.start) : null}
                       endDate={exportDateRange.end ? new Date(exportDateRange.end) : null}
@@ -1345,7 +1352,7 @@ const OpinionDashboard = () => {
                   <div className="flex-1">
                     <DatePicker
                       selected={reportDateRange.start ? new Date(reportDateRange.start) : null}
-                      onChange={(date: Date | null) => setReportDateRange({ ...reportDateRange, start: date ? date.toISOString().split('T')[0] : "" })}
+                      onChange={(date: Date | null) => setReportDateRange({ ...reportDateRange, start: date ? formatDateInput(date) : "" })}
                       selectsStart
                       startDate={reportDateRange.start ? new Date(reportDateRange.start) : null}
                       endDate={reportDateRange.end ? new Date(reportDateRange.end) : null}
@@ -1358,7 +1365,7 @@ const OpinionDashboard = () => {
                   <div className="flex-1">
                     <DatePicker
                       selected={reportDateRange.end ? new Date(reportDateRange.end) : null}
-                      onChange={(date: Date | null) => setReportDateRange({ ...reportDateRange, end: date ? date.toISOString().split('T')[0] : "" })}
+                      onChange={(date: Date | null) => setReportDateRange({ ...reportDateRange, end: date ? formatDateInput(date) : "" })}
                       selectsEnd
                       startDate={reportDateRange.start ? new Date(reportDateRange.start) : null}
                       endDate={reportDateRange.end ? new Date(reportDateRange.end) : null}

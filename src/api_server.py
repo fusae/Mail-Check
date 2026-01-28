@@ -13,7 +13,7 @@ import os
 import re
 import sqlite3
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import requests
 import yaml
@@ -162,7 +162,7 @@ def row_to_opinion(row):
         "url": row["url"],
         "status": row["status"] or "active",
         "dismissed_at": row["dismissed_at"],
-        "createdAt": row["processed_at"],
+        "createdAt": _format_china_time(row["processed_at"]),
     }
 
 
@@ -503,6 +503,7 @@ def get_trend():
 
     for row in rows:
         ts = _parse_db_datetime(row["processed_at"])
+        ts = _to_china_time(ts)
         if not ts:
             continue
         label = ts.strftime(bucket_fmt)
@@ -611,6 +612,23 @@ def _parse_db_datetime(value):
         return datetime.fromisoformat(value)
     except ValueError:
         return None
+
+
+CHINA_TZ = timezone(timedelta(hours=8))
+
+
+def _to_china_time(dt):
+    if not dt:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc).astimezone(CHINA_TZ)
+    return dt.astimezone(CHINA_TZ)
+
+
+def _format_china_time(value):
+    dt = _parse_db_datetime(value)
+    dt = _to_china_time(dt)
+    return dt.isoformat(timespec="seconds") if dt else value
 
 
 def _severity_score(severity):
