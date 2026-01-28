@@ -550,7 +550,7 @@ const OpinionDashboard = () => {
             </div>
           </div>
 
-          <div className="flex w-full flex-col gap-3 lg:w-auto lg:flex-row lg:items-center">
+          <div className="hidden lg:flex lg:w-auto lg:flex-row lg:items-center lg:gap-3">
             <div className="flex items-center gap-2 rounded-2xl border border-slate-800/60 bg-slate-900/60 px-3 py-2">
               <Calendar className="h-4 w-4 text-slate-400" />
               <select
@@ -591,7 +591,7 @@ const OpinionDashboard = () => {
             </div>
           </div>
 
-          <form onSubmit={handleSearch} className="flex w-full flex-col gap-3 lg:w-auto lg:flex-row lg:items-center">
+          <form onSubmit={handleSearch} className="hidden lg:flex lg:w-auto lg:flex-row lg:items-center lg:gap-3">
             <div className="relative w-full lg:w-auto">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
               <input
@@ -622,6 +622,72 @@ const OpinionDashboard = () => {
       </header>
 
       <main className="relative z-10 mx-auto grid max-w-7xl grid-cols-12 gap-6 px-6 py-8">
+        <section className="col-span-12 lg:hidden space-y-3">
+          <div className="flex items-center gap-2 rounded-2xl border border-slate-800/60 bg-slate-900/60 px-3 py-2">
+            <Calendar className="h-4 w-4 text-slate-400" />
+            <select
+              value={timeRange}
+              onChange={(e) => setTimeRange(e.target.value as "24h" | "7d" | "30d")}
+              className="border-none bg-transparent text-sm text-slate-200 outline-none"
+            >
+              <option value="24h">最近24小时</option>
+              <option value="7d">最近7天</option>
+              <option value="30d">最近30天</option>
+            </select>
+          </div>
+
+          <form onSubmit={handleSearch} className="flex flex-col gap-2">
+            <div className="relative w-full">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <input
+                type="text"
+                placeholder="自然语言搜索：比如“产品质量投诉”"
+                className="w-full rounded-2xl border border-slate-800/60 bg-slate-900/60 py-2.5 pl-10 pr-4 text-sm text-slate-200 outline-none transition focus:border-indigo-500/70"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="submit"
+                className="flex-1 rounded-2xl border border-indigo-500/40 bg-indigo-500/10 px-4 py-2 text-xs font-semibold uppercase tracking-wider text-indigo-200"
+              >
+                搜索
+              </button>
+              <button
+                type="button"
+                onClick={fetchData}
+                className="rounded-2xl border border-slate-800/70 p-2 text-slate-400 transition hover:bg-slate-900/70"
+              >
+                <RefreshCw className="h-4 w-4" />
+              </button>
+            </div>
+          </form>
+
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={() => setExportModalOpen(true)}
+              className="flex items-center justify-center gap-2 rounded-2xl border border-slate-800/60 bg-slate-900/60 px-3 py-2 text-sm text-slate-200 transition hover:bg-slate-800/80"
+            >
+              <Download className="h-4 w-4" />
+              <span>导出</span>
+            </button>
+            <button
+              onClick={openSuppressModal}
+              className="flex items-center justify-center gap-2 rounded-2xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm font-semibold text-emerald-200 transition hover:bg-emerald-500/20"
+            >
+              <ShieldAlert className="h-4 w-4" />
+              <span>屏蔽</span>
+            </button>
+            <button
+              onClick={() => setExportReportOpen(true)}
+              className="col-span-2 flex items-center justify-center gap-2 rounded-2xl border border-indigo-500/40 bg-indigo-500/10 px-3 py-2 text-sm font-semibold text-indigo-200 transition hover:bg-indigo-500/20"
+            >
+              <FileText className="h-4 w-4" />
+              <span>生成报告</span>
+            </button>
+          </div>
+        </section>
         {error && (
           <div className="col-span-12 flex items-center gap-3 rounded-2xl border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-200">
             <AlertTriangle className="h-5 w-5 text-red-400" />
