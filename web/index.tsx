@@ -72,22 +72,58 @@ const normalizeSeverity = (value?: Severity | null) => {
   return "low";
 };
 
-const formatTime = (value: string) => {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString("zh-CN", {
+const CHINA_TZ = "Asia/Shanghai";
+
+const formatChinaDate = (date: Date) => {
+  const parts = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: CHINA_TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const year = parts.find((part) => part.type === "year")?.value ?? "";
+  const month = parts.find((part) => part.type === "month")?.value ?? "";
+  const day = parts.find((part) => part.type === "day")?.value ?? "";
+  return `${year}-${month}-${day}`;
+};
+
+const formatChinaMonthDay = (date: Date) =>
+  new Intl.DateTimeFormat("zh-CN", {
+    timeZone: CHINA_TZ,
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+
+const formatChinaHour = (date: Date) => {
+  const hour = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: CHINA_TZ,
+    hour: "2-digit",
+    hour12: false,
+  }).format(date);
+  return `${hour}:00`;
+};
+
+const parseChinaDate = (value: string) => {
+  if (!value) return null;
+  return new Date(`${value}T00:00:00+08:00`);
+};
+
+const formatTime = (value: string | Date) => {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return typeof value === "string" ? value : "";
+  }
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: CHINA_TZ,
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
-  });
+  }).format(date);
 };
 
 const formatDateInput = (date: Date) => {
-  const year = date.getFullYear();
-  const month = `${date.getMonth() + 1}`.padStart(2, "0");
-  const day = `${date.getDate()}`.padStart(2, "0");
-  return `${year}-${month}-${day}`;
+  return formatChinaDate(date);
 };
 
 const OpinionDashboard = () => {
@@ -209,7 +245,7 @@ const OpinionDashboard = () => {
       });
       const result = await res.json();
       setAiAnalysis(result.text || "总结生成失败");
-      setSummaryAt(new Date().toLocaleString("zh-CN"));
+      setSummaryAt(formatTime(new Date()));
     } catch (err) {
       setAiAnalysis("AI 分析服务暂时不可用");
     } finally {
@@ -320,11 +356,11 @@ const OpinionDashboard = () => {
         let key: string;
 
         if (timeRange === "24h") {
-          key = `${date.getHours()}:00`;
+          key = formatChinaHour(date);
         } else if (timeRange === "7d") {
-          key = date.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" });
+          key = formatChinaMonthDay(date);
         } else {
-          key = date.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" });
+          key = formatChinaMonthDay(date);
         }
 
         if (!grouped.has(key)) {
@@ -564,7 +600,7 @@ const OpinionDashboard = () => {
 
       const blob = await response.blob();
       const reportName = reportHospital === "all" ? "全院汇总" : reportHospital;
-      const filename = `${reportName}_舆情报告_${new Date().toISOString().split('T')[0]}.${reportFormat === "pdf" ? "pdf" : "docx"}`;
+      const filename = `${reportName}_舆情报告_${formatChinaDate(new Date())}.${reportFormat === "pdf" ? "pdf" : "docx"}`;
       const link = document.createElement("a");
       link.href = URL.createObjectURL(blob);
       link.download = filename;
@@ -593,21 +629,23 @@ const OpinionDashboard = () => {
         const itemDate = new Date(item.createdAt);
 
         if (exportDateRange.start) {
-          const startDate = new Date(exportDateRange.start);
-          if (itemDate < startDate) return false;
+          const startDate = parseChinaDate(exportDateRange.start);
+          if (startDate && itemDate < startDate) return false;
         }
 
         if (exportDateRange.end) {
-          const endDate = new Date(exportDateRange.end);
-          endDate.setHours(23, 59, 59);
-          if (itemDate > endDate) return false;
+          const endDate = parseChinaDate(exportDateRange.end);
+          if (endDate) {
+            endDate.setHours(23, 59, 59, 999);
+            if (itemDate > endDate) return false;
+          }
         }
 
         return true;
       });
     }
 
-    const filename = `舆情数据_${new Date().toISOString().split('T')[0]}`;
+    const filename = `舆情数据_${formatChinaDate(new Date())}`;
 
     if (format === 'csv') {
       exportToCSV(filteredData, filename);
@@ -1253,11 +1291,11 @@ const OpinionDashboard = () => {
                 <div className="flex items-center gap-3">
                   <div className="flex-1">
                     <DatePicker
-                      selected={exportDateRange.start ? new Date(exportDateRange.start) : null}
+                      selected={exportDateRange.start ? parseChinaDate(exportDateRange.start) : null}
                       onChange={(date: Date | null) => setExportDateRange({ ...exportDateRange, start: date ? formatDateInput(date) : "" })}
                       selectsStart
-                      startDate={exportDateRange.start ? new Date(exportDateRange.start) : null}
-                      endDate={exportDateRange.end ? new Date(exportDateRange.end) : null}
+                      startDate={exportDateRange.start ? parseChinaDate(exportDateRange.start) : null}
+                      endDate={exportDateRange.end ? parseChinaDate(exportDateRange.end) : null}
                       dateFormat="yyyy-MM-dd"
                       placeholderText="开始日期"
                       className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 focus:border-indigo-500 focus:outline-none"
@@ -1266,12 +1304,12 @@ const OpinionDashboard = () => {
                   <span className="text-slate-500">至</span>
                   <div className="flex-1">
                     <DatePicker
-                      selected={exportDateRange.end ? new Date(exportDateRange.end) : null}
+                      selected={exportDateRange.end ? parseChinaDate(exportDateRange.end) : null}
                       onChange={(date: Date | null) => setExportDateRange({ ...exportDateRange, end: date ? formatDateInput(date) : "" })}
                       selectsEnd
-                      startDate={exportDateRange.start ? new Date(exportDateRange.start) : null}
-                      endDate={exportDateRange.end ? new Date(exportDateRange.end) : null}
-                      minDate={exportDateRange.start ? new Date(exportDateRange.start) : null}
+                      startDate={exportDateRange.start ? parseChinaDate(exportDateRange.start) : null}
+                      endDate={exportDateRange.end ? parseChinaDate(exportDateRange.end) : null}
+                      minDate={exportDateRange.start ? parseChinaDate(exportDateRange.start) : null}
                       dateFormat="yyyy-MM-dd"
                       placeholderText="结束日期"
                       className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 focus:border-indigo-500 focus:outline-none"
@@ -1351,11 +1389,11 @@ const OpinionDashboard = () => {
                 <div className="flex items-center gap-3">
                   <div className="flex-1">
                     <DatePicker
-                      selected={reportDateRange.start ? new Date(reportDateRange.start) : null}
+                      selected={reportDateRange.start ? parseChinaDate(reportDateRange.start) : null}
                       onChange={(date: Date | null) => setReportDateRange({ ...reportDateRange, start: date ? formatDateInput(date) : "" })}
                       selectsStart
-                      startDate={reportDateRange.start ? new Date(reportDateRange.start) : null}
-                      endDate={reportDateRange.end ? new Date(reportDateRange.end) : null}
+                      startDate={reportDateRange.start ? parseChinaDate(reportDateRange.start) : null}
+                      endDate={reportDateRange.end ? parseChinaDate(reportDateRange.end) : null}
                       dateFormat="yyyy-MM-dd"
                       placeholderText="开始日期"
                       className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 focus:border-indigo-500 focus:outline-none"
@@ -1364,12 +1402,12 @@ const OpinionDashboard = () => {
                   <span className="text-slate-500">至</span>
                   <div className="flex-1">
                     <DatePicker
-                      selected={reportDateRange.end ? new Date(reportDateRange.end) : null}
+                      selected={reportDateRange.end ? parseChinaDate(reportDateRange.end) : null}
                       onChange={(date: Date | null) => setReportDateRange({ ...reportDateRange, end: date ? formatDateInput(date) : "" })}
                       selectsEnd
-                      startDate={reportDateRange.start ? new Date(reportDateRange.start) : null}
-                      endDate={reportDateRange.end ? new Date(reportDateRange.end) : null}
-                      minDate={reportDateRange.start ? new Date(reportDateRange.start) : null}
+                      startDate={reportDateRange.start ? parseChinaDate(reportDateRange.start) : null}
+                      endDate={reportDateRange.end ? parseChinaDate(reportDateRange.end) : null}
+                      minDate={reportDateRange.start ? parseChinaDate(reportDateRange.start) : null}
                       dateFormat="yyyy-MM-dd"
                       placeholderText="结束日期"
                       className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 focus:border-indigo-500 focus:outline-none"

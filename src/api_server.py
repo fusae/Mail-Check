@@ -368,36 +368,52 @@ def get_stats():
             start_dt = now - timedelta(days=7)
         end_dt = now
 
-    filters = ["COALESCE(NULLIF(status,''),'active') != 'dismissed'"]
+    time_filters = []
     params = []
     if start_dt:
-        filters.append("processed_at >= ?")
+        time_filters.append("processed_at >= ?")
         params.append(start_dt.strftime("%Y-%m-%d %H:%M:%S"))
     if end_dt:
-        filters.append("processed_at <= ?")
+        time_filters.append("processed_at <= ?")
         params.append(end_dt.strftime("%Y-%m-%d %H:%M:%S"))
-    where_clause = " AND ".join(filters)
+    time_clause = " AND ".join(time_filters)
+    active_clause = " AND ".join([f for f in [time_clause, "COALESCE(NULLIF(status,''),'active') != 'dismissed'"] if f])
+    time_where = f"WHERE {time_clause}" if time_clause else ""
+    active_where = f"WHERE {active_clause}" if active_clause else ""
+
+    proc_cond = ""
+    dis_cond = ""
+    stats_params = {}
+    if start_dt:
+        proc_cond += " AND processed_at >= :start_proc"
+        dis_cond += " AND dismissed_at >= :start_dis"
+        stats_params["start_proc"] = start_dt.strftime("%Y-%m-%d %H:%M:%S")
+        stats_params["start_dis"] = start_dt.strftime("%Y-%m-%d %H:%M:%S")
+    if end_dt:
+        proc_cond += " AND processed_at <= :end_proc"
+        dis_cond += " AND dismissed_at <= :end_dis"
+        stats_params["end_proc"] = end_dt.strftime("%Y-%m-%d %H:%M:%S")
+        stats_params["end_dis"] = end_dt.strftime("%Y-%m-%d %H:%M:%S")
 
     rows = query_db(
         f"""
         SELECT
-            SUM(CASE WHEN COALESCE(NULLIF(status,''),'active') != 'dismissed' THEN 1 ELSE 0 END) AS active_total,
-            SUM(CASE WHEN COALESCE(NULLIF(status,''),'active') = 'dismissed' THEN 1 ELSE 0 END) AS dismissed_total,
-            SUM(CASE WHEN severity = 'high' AND COALESCE(NULLIF(status,''),'active') != 'dismissed' THEN 1 ELSE 0 END) AS high_total,
-            SUM(CASE WHEN severity = 'medium' AND COALESCE(NULLIF(status,''),'active') != 'dismissed' THEN 1 ELSE 0 END) AS medium_total,
-            SUM(CASE WHEN severity = 'low' AND COALESCE(NULLIF(status,''),'active') != 'dismissed' THEN 1 ELSE 0 END) AS low_total,
-            SUM(CASE WHEN COALESCE(NULLIF(status,''),'active') != 'dismissed'
+            SUM(CASE WHEN COALESCE(NULLIF(status,''),'active') != 'dismissed'{proc_cond} THEN 1 ELSE 0 END) AS active_total,
+            SUM(CASE WHEN COALESCE(NULLIF(status,''),'active') = 'dismissed'{dis_cond} THEN 1 ELSE 0 END) AS dismissed_total,
+            SUM(CASE WHEN severity = 'high' AND COALESCE(NULLIF(status,''),'active') != 'dismissed'{proc_cond} THEN 1 ELSE 0 END) AS high_total,
+            SUM(CASE WHEN severity = 'medium' AND COALESCE(NULLIF(status,''),'active') != 'dismissed'{proc_cond} THEN 1 ELSE 0 END) AS medium_total,
+            SUM(CASE WHEN severity = 'low' AND COALESCE(NULLIF(status,''),'active') != 'dismissed'{proc_cond} THEN 1 ELSE 0 END) AS low_total,
+            SUM(CASE WHEN COALESCE(NULLIF(status,''),'active') != 'dismissed'{proc_cond}
                 THEN CASE
                     WHEN severity = 'high' THEN 0.92
                     WHEN severity = 'medium' THEN 0.6
                     ELSE 0.35
                 END
                 ELSE 0 END) AS total_score,
-            SUM(CASE WHEN COALESCE(NULLIF(status,''),'active') != 'dismissed' THEN 1 ELSE 0 END) AS score_count
+            SUM(CASE WHEN COALESCE(NULLIF(status,''),'active') != 'dismissed'{proc_cond} THEN 1 ELSE 0 END) AS score_count
         FROM negative_sentiments
-        WHERE {where_clause}
         """,
-        tuple(params),
+        stats_params,
         fetchone=True,
     )
     sources_rows = query_db(
@@ -406,7 +422,7 @@ def get_stats():
             COALESCE(NULLIF(source,''),'未知') AS source,
             COUNT(*) AS count
         FROM negative_sentiments
-        WHERE {where_clause}
+        {active_where}
         GROUP BY COALESCE(NULLIF(source,''),'未知')
         ORDER BY count DESC
         LIMIT 10
@@ -417,7 +433,7 @@ def get_stats():
         f"""
         SELECT DISTINCT COALESCE(NULLIF(hospital_name,''),'未知') AS hospital
         FROM negative_sentiments
-        WHERE {where_clause}
+        {active_where}
         ORDER BY hospital
         """,
         tuple(params),
@@ -431,7 +447,7 @@ def get_stats():
             SUM(CASE WHEN severity = 'low' THEN 1 ELSE 0 END) AS low,
             COUNT(*) AS total
         FROM negative_sentiments
-        WHERE {where_clause}
+        {active_where}
         GROUP BY COALESCE(NULLIF(hospital_name,''),'未知')
         ORDER BY total DESC
         LIMIT 10
@@ -621,7 +637,7 @@ def _to_china_time(dt):
     if not dt:
         return None
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc).astimezone(CHINA_TZ)
+        return dt.replace(tzinfo=CHINA_TZ)
     return dt.astimezone(CHINA_TZ)
 
 
