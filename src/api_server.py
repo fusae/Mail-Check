@@ -356,16 +356,136 @@ def get_stats():
         SELECT
             SUM(CASE WHEN COALESCE(NULLIF(status,''),'active') != 'dismissed' THEN 1 ELSE 0 END) AS active_total,
             SUM(CASE WHEN COALESCE(NULLIF(status,''),'active') = 'dismissed' THEN 1 ELSE 0 END) AS dismissed_total,
-            SUM(CASE WHEN severity = 'high' AND COALESCE(NULLIF(status,''),'active') != 'dismissed' THEN 1 ELSE 0 END) AS high_total
+            SUM(CASE WHEN severity = 'high' AND COALESCE(NULLIF(status,''),'active') != 'dismissed' THEN 1 ELSE 0 END) AS high_total,
+            SUM(CASE WHEN severity = 'medium' AND COALESCE(NULLIF(status,''),'active') != 'dismissed' THEN 1 ELSE 0 END) AS medium_total,
+            SUM(CASE WHEN severity = 'low' AND COALESCE(NULLIF(status,''),'active') != 'dismissed' THEN 1 ELSE 0 END) AS low_total,
+            SUM(CASE WHEN COALESCE(NULLIF(status,''),'active') != 'dismissed'
+                THEN CASE
+                    WHEN severity = 'high' THEN 0.92
+                    WHEN severity = 'medium' THEN 0.6
+                    ELSE 0.35
+                END
+                ELSE 0 END) AS total_score,
+            SUM(CASE WHEN COALESCE(NULLIF(status,''),'active') != 'dismissed' THEN 1 ELSE 0 END) AS score_count
         FROM negative_sentiments
         """,
         fetchone=True,
     )
+    sources_rows = query_db(
+        """
+        SELECT
+            COALESCE(NULLIF(source,''),'未知') AS source,
+            COUNT(*) AS count
+        FROM negative_sentiments
+        WHERE COALESCE(NULLIF(status,''),'active') != 'dismissed'
+        GROUP BY COALESCE(NULLIF(source,''),'未知')
+        ORDER BY count DESC
+        LIMIT 10
+        """
+    )
+    hospital_list_rows = query_db(
+        """
+        SELECT DISTINCT COALESCE(NULLIF(hospital_name,''),'未知') AS hospital
+        FROM negative_sentiments
+        ORDER BY hospital
+        """
+    )
+    hospital_rows = query_db(
+        """
+        SELECT
+            COALESCE(NULLIF(hospital_name,''),'未知') AS hospital,
+            SUM(CASE WHEN severity = 'high' THEN 1 ELSE 0 END) AS high,
+            SUM(CASE WHEN severity = 'medium' THEN 1 ELSE 0 END) AS medium,
+            SUM(CASE WHEN severity = 'low' THEN 1 ELSE 0 END) AS low,
+            COUNT(*) AS total
+        FROM negative_sentiments
+        WHERE COALESCE(NULLIF(status,''),'active') != 'dismissed'
+        GROUP BY COALESCE(NULLIF(hospital_name,''),'未知')
+        ORDER BY total DESC
+        LIMIT 10
+        """
+    )
+    score_count = rows["score_count"] or 0
+    avg_score = round((rows["total_score"] or 0) / score_count * 100, 1) if score_count else 0
     return jsonify({
         "active_total": rows["active_total"] or 0,
         "dismissed_total": rows["dismissed_total"] or 0,
         "high_total": rows["high_total"] or 0,
+        "avg_score": avg_score,
+        "severity": {
+            "high": rows["high_total"] or 0,
+            "medium": rows["medium_total"] or 0,
+            "low": rows["low_total"] or 0,
+        },
+        "sources": [
+            {"source": r["source"], "count": r["count"] or 0}
+            for r in sources_rows
+        ],
+        "hospital_list": [r["hospital"] for r in hospital_list_rows],
+        "hospitals": [
+            {
+                "hospital": r["hospital"],
+                "high": r["high"] or 0,
+                "medium": r["medium"] or 0,
+                "low": r["low"] or 0,
+                "total": r["total"] or 0,
+            }
+            for r in hospital_rows
+        ],
     })
+
+
+@app.get("/api/stats/trend")
+def get_trend():
+    range_key = request.args.get("range", "7d")
+    now = datetime.now()
+    if range_key == "24h":
+        start_dt = now - timedelta(hours=24)
+        bucket_fmt = "%H:00"
+    elif range_key == "30d":
+        start_dt = now - timedelta(days=30)
+        bucket_fmt = "%m-%d"
+    else:
+        start_dt = now - timedelta(days=7)
+        bucket_fmt = "%m-%d"
+
+    rows = query_db(
+        """
+        SELECT processed_at, severity
+        FROM negative_sentiments
+        WHERE COALESCE(NULLIF(status,''),'active') != 'dismissed'
+          AND processed_at >= ?
+          AND processed_at <= ?
+        ORDER BY processed_at ASC
+        """,
+        (start_dt.strftime("%Y-%m-%d %H:%M:%S"), now.strftime("%Y-%m-%d %H:%M:%S")),
+    )
+
+    buckets = defaultdict(lambda: {"count": 0, "score": 0.0})
+    cursor = start_dt
+    step = timedelta(hours=1) if range_key == "24h" else timedelta(days=1)
+    while cursor <= now:
+        buckets[cursor.strftime(bucket_fmt)]
+        cursor += step
+
+    for row in rows:
+        ts = _parse_db_datetime(row["processed_at"])
+        if not ts:
+            continue
+        label = ts.strftime(bucket_fmt)
+        buckets[label]["count"] += 1
+        buckets[label]["score"] += _severity_score(row["severity"] or "low")
+
+    data = []
+    for label, item in sorted(buckets.items(), key=lambda x: x[0]):
+        avg_score = round((item["score"] / item["count"]) * 100) if item["count"] else 0
+        data.append({
+            "label": label,
+            "count": item["count"],
+            "avgScore": avg_score,
+        })
+
+    return jsonify({"range": range_key, "data": data})
 
 
 @app.get("/api/opinions/<sentiment_id>")

@@ -101,6 +101,14 @@ const OpinionDashboard = () => {
   const [trendMode, setTrendMode] = useState<"count" | "score">("count");
   const [tooltipContent, setTooltipContent] = useState<{ title: string; content: string; position: { x: number; y: number } } | null>(null);
   const [statsOverride, setStatsOverride] = useState<{ total: number; dismissed: number; highRisk: number } | null>(null);
+  const [statsDetail, setStatsDetail] = useState<{
+    severity: { high: number; medium: number; low: number };
+    hospitals: Array<{ hospital: string; high: number; medium: number; low: number; total: number }>;
+    sources: Array<{ source: string; count: number }>;
+    hospitalList: string[];
+    avgScore?: number;
+  } | null>(null);
+  const [trendOverride, setTrendOverride] = useState<Array<{ label: string; count: number; avgScore: number }> | null>(null);
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [exportDateRange, setExportDateRange] = useState<{ start: string; end: string }>({
     start: "",
@@ -153,6 +161,32 @@ const OpinionDashboard = () => {
         dismissed: data.dismissed_total ?? 0,
         highRisk: data.high_total ?? 0,
       });
+      if (data.severity || data.hospitals || data.sources || data.hospital_list) {
+        setStatsDetail({
+          severity: {
+            high: data.severity?.high ?? data.high_total ?? 0,
+            medium: data.severity?.medium ?? 0,
+            low: data.severity?.low ?? 0,
+          },
+          hospitals: Array.isArray(data.hospitals) ? data.hospitals : [],
+          sources: Array.isArray(data.sources) ? data.sources : [],
+          hospitalList: Array.isArray(data.hospital_list) ? data.hospital_list : [],
+          avgScore: data.avg_score ?? undefined,
+        });
+      }
+    } catch (err) {
+      // ignore
+    }
+  };
+
+  const fetchTrend = async () => {
+    try {
+      const resp = await fetch(`/api/stats/trend?range=${timeRange}`);
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (Array.isArray(data.data)) {
+        setTrendOverride(data.data);
+      }
     } catch (err) {
       // ignore
     }
@@ -217,6 +251,10 @@ const OpinionDashboard = () => {
     fetchData();
   }, []);
 
+  useEffect(() => {
+    fetchTrend();
+  }, [timeRange]);
+
   const stats = useMemo(() => {
     const active = opinions.filter((o) => o.status !== "dismissed");
     const highRisk = active.filter((o) => o.severity === "high").length;
@@ -232,16 +270,19 @@ const OpinionDashboard = () => {
         highRisk: statsOverride.highRisk,
         dismissed: statsOverride.dismissed,
         total: statsOverride.total,
-        avgScore,
+        avgScore: statsDetail?.avgScore ?? avgScore,
       };
     }
     return { highRisk, dismissed, total: active.length, avgScore };
-  }, [opinions, statsOverride]);
+  }, [opinions, statsOverride, statsDetail]);
 
   const hospitalOptions = useMemo(() => {
+    if (statsDetail?.hospitalList?.length) {
+      return ["all", ...statsDetail.hospitalList.filter(Boolean)];
+    }
     const set = new Set(opinions.map((o) => o.hospital).filter(Boolean));
     return ["all", ...Array.from(set)];
-  }, [opinions]);
+  }, [opinions, statsDetail]);
 
   const filteredOpinions = useMemo(() => {
     return opinions.filter((item) => {
@@ -257,6 +298,7 @@ const OpinionDashboard = () => {
   }, [opinions]);
 
   const trendData = useMemo(() => {
+    if (trendOverride) return trendOverride;
     const now = new Date();
     const cutoffTime = new Date(now.getTime() - getTimeRangeMs(timeRange));
 
@@ -290,9 +332,12 @@ const OpinionDashboard = () => {
       count: data.count,
       avgScore: Math.round((data.totalScore / data.count) * 100),
     }));
-  }, [activeOpinions, timeRange]);
+  }, [activeOpinions, timeRange, trendOverride]);
 
   const hospitalComparisonData = useMemo(() => {
+    if (statsDetail?.hospitals?.length) {
+      return statsDetail.hospitals.slice(0, 10);
+    }
     const grouped = new Map<string, { high: number; medium: number; low: number }>();
 
     activeOpinions.forEach((item) => {
@@ -314,7 +359,7 @@ const OpinionDashboard = () => {
       }))
       .sort((a, b) => b.total - a.total)
       .slice(0, 10);
-  }, [activeOpinions]);
+  }, [activeOpinions, statsDetail]);
 
   const hospitalLegendItems = [
     { id: "low", label: "低危", color: "#10b981" },
@@ -324,6 +369,9 @@ const OpinionDashboard = () => {
 
 
   const sourceDistributionData = useMemo(() => {
+    if (statsDetail?.sources?.length) {
+      return statsDetail.sources.slice(0, 8);
+    }
     const grouped = new Map<string, number>();
 
     activeOpinions.forEach((item) => {
@@ -335,16 +383,24 @@ const OpinionDashboard = () => {
       .map(([source, count]) => ({ source, count }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 8);
-  }, [activeOpinions]);
+  }, [activeOpinions, statsDetail]);
 
   const severityDistributionData = useMemo(() => {
+    if (statsDetail?.severity) {
+      const data = [
+        { name: "高危", value: statsDetail.severity.high ?? 0, color: "#ef4444" },
+        { name: "中危", value: statsDetail.severity.medium ?? 0, color: "#f97316" },
+        { name: "低危", value: statsDetail.severity.low ?? 0, color: "#10b981" },
+      ];
+      return data.filter((d) => d.value > 0);
+    }
     const data = [
       { name: "高危", value: activeOpinions.filter((o) => o.severity === "high").length, color: "#ef4444" },
       { name: "中危", value: activeOpinions.filter((o) => o.severity === "medium").length, color: "#f97316" },
       { name: "低危", value: activeOpinions.filter((o) => o.severity === "low").length, color: "#10b981" },
     ];
     return data.filter((d) => d.value > 0);
-  }, [activeOpinions]);
+  }, [activeOpinions, statsDetail]);
 
   function getTimeRangeMs(range: "24h" | "7d" | "30d"): number {
     switch (range) {
@@ -939,7 +995,9 @@ const OpinionDashboard = () => {
 
           <div className="flex flex-wrap items-center justify-between gap-4">
             <h2 className="font-display text-xl font-semibold">实时舆情列表</h2>
-            <span className="text-xs text-slate-500">{filteredOpinions.length} 条记录</span>
+            <span className="text-xs text-slate-500">
+              {filteredOpinions.length} 条记录{statsOverride ? ` / 共 ${statsOverride.total} 条` : ""}
+            </span>
           </div>
           <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-slate-800/70 bg-slate-900/40 px-4 py-3 text-xs text-slate-400">
             <Filter className="h-4 w-4 text-slate-500" />
@@ -1094,7 +1152,7 @@ const OpinionDashboard = () => {
       {selectedItem && (
         <div className="fixed inset-0 z-50 flex justify-end">
           <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm" onClick={() => setSelectedItem(null)} />
-          <aside className="relative h-full w-full max-w-xl border-l border-slate-800/80 bg-slate-900/95 p-6 shadow-2xl">
+          <aside className="relative h-full w-full max-w-xl overflow-y-auto border-l border-slate-800/80 bg-slate-900/95 p-6 shadow-2xl touch-pan-y">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-xs uppercase tracking-widest text-slate-500">穿透分析</p>
