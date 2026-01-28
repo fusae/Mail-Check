@@ -6,7 +6,11 @@ export default defineConfig({
     port: 3000,
     host: '0.0.0.0',
     proxy: {
-      '/api': 'http://127.0.0.1:5003',
+      '/api': {
+        target: 'http://127.0.0.1:5003',
+        changeOrigin: true,
+        secure: false,
+      },
     },
   },
   plugins: [react()],

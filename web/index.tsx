@@ -2,6 +2,8 @@
 import "./index.css";
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
+import DatePicker from "react-datepicker";
+import "react-datepicker/dist/react-datepicker.css";
 import {
   AlertTriangle,
   ArrowUpRight,
@@ -17,8 +19,15 @@ import {
   Link as LinkIcon,
   X,
   Loader2,
+  Calendar,
+  TrendingUp,
+  PieChart as PieChartIcon,
+  Activity,
+  Download,
+  FileText,
+  ChevronDown,
 } from "lucide-react";
-import { Area, AreaChart, ResponsiveContainer, Tooltip } from "recharts";
+import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 type Severity = "low" | "medium" | "high";
 
@@ -88,6 +97,24 @@ const OpinionDashboard = () => {
   const [severityFilter, setSeverityFilter] = useState<Severity | "all">("all");
   const [hospitalFilter, setHospitalFilter] = useState("all");
   const [showDismissed, setShowDismissed] = useState(false);
+  const [timeRange, setTimeRange] = useState<"24h" | "7d" | "30d">("7d");
+  const [trendMode, setTrendMode] = useState<"count" | "score">("count");
+  const [tooltipContent, setTooltipContent] = useState<{ title: string; content: string; position: { x: number; y: number } } | null>(null);
+  const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [exportDateRange, setExportDateRange] = useState<{ start: string; end: string }>({
+    start: "",
+    end: ""
+  });
+  const [exportHospital, setExportHospital] = useState("all");
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportReportOpen, setExportReportOpen] = useState(false);
+  const [reportDateRange, setReportDateRange] = useState<{ start: string; end: string }>({
+    start: "",
+    end: ""
+  });
+  const [reportHospital, setReportHospital] = useState("all");
+  const [reportFormat, setReportFormat] = useState<"pdf" | "word">("pdf");
+  const [isGeneratingReport, setIsGeneratingReport] = useState(false);
 
   const fetchData = async () => {
     setIsLoading(true);
@@ -181,17 +208,6 @@ const OpinionDashboard = () => {
     return { highRisk, dismissed, total: active.length, avgScore };
   }, [opinions]);
 
-  const trendData = useMemo(() => {
-    const items = [...opinions]
-      .filter((o) => o.status !== "dismissed")
-      .slice(0, 12)
-      .reverse();
-    return items.map((item) => ({
-      label: formatTime(item.createdAt),
-      value: Math.round((item.score || severityMeta[normalizeSeverity(item.severity)].score) * 100),
-    }));
-  }, [opinions]);
-
   const hospitalOptions = useMemo(() => {
     const set = new Set(opinions.map((o) => o.hospital).filter(Boolean));
     return ["all", ...Array.from(set)];
@@ -205,6 +221,265 @@ const OpinionDashboard = () => {
       return true;
     });
   }, [opinions, severityFilter, hospitalFilter, showDismissed]);
+
+  const activeOpinions = useMemo(() => {
+    return opinions.filter((o) => o.status !== "dismissed");
+  }, [opinions]);
+
+  const trendData = useMemo(() => {
+    const now = new Date();
+    const cutoffTime = new Date(now.getTime() - getTimeRangeMs(timeRange));
+
+    const grouped = new Map<string, { count: number; totalScore: number }>();
+
+    activeOpinions
+      .filter((o) => new Date(o.createdAt) >= cutoffTime)
+      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+      .forEach((item) => {
+        const date = new Date(item.createdAt);
+        let key: string;
+
+        if (timeRange === "24h") {
+          key = `${date.getHours()}:00`;
+        } else if (timeRange === "7d") {
+          key = date.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" });
+        } else {
+          key = date.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" });
+        }
+
+        if (!grouped.has(key)) {
+          grouped.set(key, { count: 0, totalScore: 0 });
+        }
+        const data = grouped.get(key)!;
+        data.count += 1;
+        data.totalScore += item.score || severityMeta[normalizeSeverity(item.severity)].score;
+      });
+
+    return Array.from(grouped.entries()).map(([label, data]) => ({
+      label,
+      count: data.count,
+      avgScore: Math.round((data.totalScore / data.count) * 100),
+    }));
+  }, [activeOpinions, timeRange]);
+
+  const hospitalComparisonData = useMemo(() => {
+    const grouped = new Map<string, { high: number; medium: number; low: number }>();
+
+    activeOpinions.forEach((item) => {
+      const hospital = item.hospital || "未知";
+      if (!grouped.has(hospital)) {
+        grouped.set(hospital, { high: 0, medium: 0, low: 0 });
+      }
+      const data = grouped.get(hospital)!;
+      if (item.severity === "high") data.high++;
+      else if (item.severity === "medium") data.medium++;
+      else data.low++;
+    });
+
+    return Array.from(grouped.entries())
+      .map(([hospital, severity]) => ({
+        hospital,
+        total: severity.high + severity.medium + severity.low,
+        ...severity,
+      }))
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 10);
+  }, [activeOpinions]);
+
+  const hospitalLegendItems = [
+    { id: "low", label: "低危", color: "#10b981" },
+    { id: "medium", label: "中危", color: "#f97316" },
+    { id: "high", label: "高危", color: "#ef4444" },
+  ];
+
+
+  const sourceDistributionData = useMemo(() => {
+    const grouped = new Map<string, number>();
+
+    activeOpinions.forEach((item) => {
+      const source = item.source || "未知";
+      grouped.set(source, (grouped.get(source) || 0) + 1);
+    });
+
+    return Array.from(grouped.entries())
+      .map(([source, count]) => ({ source, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 8);
+  }, [activeOpinions]);
+
+  const severityDistributionData = useMemo(() => {
+    const data = [
+      { name: "高危", value: activeOpinions.filter((o) => o.severity === "high").length, color: "#ef4444" },
+      { name: "中危", value: activeOpinions.filter((o) => o.severity === "medium").length, color: "#f97316" },
+      { name: "低危", value: activeOpinions.filter((o) => o.severity === "low").length, color: "#10b981" },
+    ];
+    return data.filter((d) => d.value > 0);
+  }, [activeOpinions]);
+
+  function getTimeRangeMs(range: "24h" | "7d" | "30d"): number {
+    switch (range) {
+      case "24h":
+        return 24 * 60 * 60 * 1000;
+      case "7d":
+        return 7 * 24 * 60 * 60 * 1000;
+      case "30d":
+        return 30 * 24 * 60 * 60 * 1000;
+    }
+  }
+
+  const handleMouseEnter = (e: React.MouseEvent, title: string, content: string) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    setTooltipContent({
+      title,
+      content,
+      position: { x: rect.left + rect.width / 2, y: rect.bottom + 10 }
+    });
+  };
+
+  const handleMouseLeave = () => {
+    setTooltipContent(null);
+  };
+
+  const exportToCSV = (data: OpinionItem[], filename: string) => {
+    const headers = ['ID', '医院', '标题', '来源', '严重程度', '风险分', '状态', '创建时间', '警示理由', '内容', '原文链接'];
+    const rows = data.map(item => [
+      item.id,
+      item.hospital,
+      item.title,
+      item.source,
+      item.severity,
+      Math.round((item.score || severityMeta[normalizeSeverity(item.severity)].score) * 100),
+      item.status,
+      item.createdAt,
+      item.reason,
+      item.content,
+      item.url || ''
+    ]);
+
+    const csvContent = [
+      headers.join(','),
+      ...rows.map(row => row.map(cell => `"${cell}"`).join(','))
+    ].join('\n');
+
+    const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `${filename}.csv`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  };
+
+  const exportToExcel = (data: OpinionItem[], filename: string) => {
+    const headers = ['ID', '医院', '标题', '来源', '严重程度', '风险分', '状态', '创建时间', '警示理由', '内容', '原文链接'];
+    const rows = data.map(item => [
+      item.id,
+      item.hospital,
+      item.title,
+      item.source,
+      item.severity,
+      Math.round((item.score || severityMeta[normalizeSeverity(item.severity)].score) * 100),
+      item.status,
+      item.createdAt,
+      item.reason,
+      item.content,
+      item.url || ''
+    ]);
+
+    const excelContent = [
+      headers.join('\t'),
+      ...rows.map(row => row.join('\t'))
+    ].join('\n');
+
+    const blob = new Blob([excelContent], { type: 'application/vnd.ms-excel;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `${filename}.xls`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  };
+
+  const generateHospitalReport = async () => {
+    if (!reportHospital) {
+      alert('请选择医院');
+      return;
+    }
+
+    setIsGeneratingReport(true);
+    try {
+      const response = await fetch("/api/reports", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          hospital: reportHospital,
+          start_date: reportDateRange.start || "",
+          end_date: reportDateRange.end || "",
+          format: reportFormat,
+          include_dismissed: false,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("报告生成失败");
+      }
+
+      const blob = await response.blob();
+      const reportName = reportHospital === "all" ? "全院汇总" : reportHospital;
+      const filename = `${reportName}_舆情报告_${new Date().toISOString().split('T')[0]}.${reportFormat === "pdf" ? "pdf" : "docx"}`;
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = filename;
+      link.click();
+      URL.revokeObjectURL(link.href);
+
+      setExportReportOpen(false);
+    } catch (err) {
+      alert("报告生成失败，请检查后端接口。");
+    } finally {
+      setIsGeneratingReport(false);
+    }
+  };
+
+  const handleExport = (format: 'csv' | 'excel') => {
+    setIsExporting(true);
+
+    let filteredData = activeOpinions;
+
+    if (exportHospital !== 'all') {
+      filteredData = filteredData.filter(item => item.hospital === exportHospital);
+    }
+
+    if (exportDateRange.start || exportDateRange.end) {
+      filteredData = filteredData.filter(item => {
+        const itemDate = new Date(item.createdAt);
+
+        if (exportDateRange.start) {
+          const startDate = new Date(exportDateRange.start);
+          if (itemDate < startDate) return false;
+        }
+
+        if (exportDateRange.end) {
+          const endDate = new Date(exportDateRange.end);
+          endDate.setHours(23, 59, 59);
+          if (itemDate > endDate) return false;
+        }
+
+        return true;
+      });
+    }
+
+    const filename = `舆情数据_${new Date().toISOString().split('T')[0]}`;
+
+    if (format === 'csv') {
+      exportToCSV(filteredData, filename);
+    } else {
+      exportToExcel(filteredData, filename);
+    }
+
+    setIsExporting(false);
+    setExportModalOpen(false);
+    setExportDateRange({ start: "", end: "" });
+    setExportHospital("all");
+  };
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
@@ -221,6 +496,39 @@ const OpinionDashboard = () => {
                 Crisis Command Center
               </p>
               <h1 className="font-display text-2xl font-bold tracking-tight">舆情监控指挥中心</h1>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 rounded-2xl border border-slate-800/60 bg-slate-900/60 px-3 py-2">
+              <Calendar className="h-4 w-4 text-slate-400" />
+              <select
+                value={timeRange}
+                onChange={(e) => setTimeRange(e.target.value as "24h" | "7d" | "30d")}
+                className="border-none bg-transparent text-sm text-slate-200 outline-none"
+              >
+                <option value="24h">最近24小时</option>
+                <option value="7d">最近7天</option>
+                <option value="30d">最近30天</option>
+              </select>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setExportModalOpen(true)}
+                className="flex items-center gap-2 rounded-2xl border border-slate-800/60 bg-slate-900/60 px-4 py-2 text-sm text-slate-200 transition hover:bg-slate-800/80 hover:border-slate-700/80"
+              >
+                <Download className="h-4 w-4" />
+                <span>导出数据</span>
+              </button>
+
+              <button
+                onClick={() => setExportReportOpen(true)}
+                className="flex items-center gap-2 rounded-2xl border border-indigo-500/40 bg-indigo-500/10 px-4 py-2 text-sm font-semibold text-indigo-200 transition hover:bg-indigo-500/20"
+              >
+                <FileText className="h-4 w-4" />
+                <span>生成报告</span>
+              </button>
             </div>
           </div>
 
@@ -260,21 +568,37 @@ const OpinionDashboard = () => {
           </div>
         )}
 
-        <section className="col-span-12 lg:col-span-4 space-y-6">
+          <section className="col-span-12 lg:col-span-4 space-y-6">
           <div className="grid grid-cols-2 gap-4">
-            <div className="rounded-3xl border border-red-500/30 bg-red-500/10 p-6">
+            <div
+              className="rounded-3xl border border-red-500/30 bg-red-500/10 p-6 cursor-help"
+              onMouseEnter={(e) => handleMouseEnter(e, '高危舆情', '当前标记为"高危"等级的负面舆情数量\n\n需要立即处理，避免危机扩大\n涉及医疗事故、重大纠纷、隐私泄露等')}
+              onMouseLeave={handleMouseLeave}
+            >
               <p className="text-xs font-semibold uppercase tracking-wider text-red-300">高危舆情</p>
               <p className="font-display text-3xl font-bold">{stats.highRisk}</p>
             </div>
-            <div className="rounded-3xl border border-indigo-500/30 bg-indigo-500/10 p-6">
+            <div
+              className="rounded-3xl border border-indigo-500/30 bg-indigo-500/10 p-6 cursor-help"
+              onMouseEnter={(e) => handleMouseEnter(e, '平均风险指数', '所有活跃舆情的平均风险分值（0-100分）\n\n高危：92分 | 中危：60分 | 低危：35分\n指数越高 → 整体舆情态势越严峻\n可作为舆情健康度的参考指标')}
+              onMouseLeave={handleMouseLeave}
+            >
               <p className="text-xs font-semibold uppercase tracking-wider text-indigo-200">平均风险指数</p>
               <p className="font-display text-3xl font-bold">{stats.avgScore}</p>
             </div>
-            <div className="rounded-3xl border border-emerald-500/30 bg-emerald-500/10 p-6">
+            <div
+              className="rounded-3xl border border-emerald-500/30 bg-emerald-500/10 p-6 cursor-help"
+              onMouseEnter={(e) => handleMouseEnter(e, '当前监控', '系统中正在监控的活跃负面舆情总数\n\n包含所有未标记为误报的舆情\n与"已误报"对应，区分有效舆情和误判\n数量越大 → 处理压力越大')}
+              onMouseLeave={handleMouseLeave}
+            >
               <p className="text-xs font-semibold uppercase tracking-wider text-emerald-200">当前监控</p>
               <p className="font-display text-3xl font-bold">{stats.total}</p>
             </div>
-            <div className="rounded-3xl border border-slate-700/40 bg-slate-900/60 p-6">
+            <div
+              className="rounded-3xl border border-slate-700/40 bg-slate-900/60 p-6 cursor-help"
+              onMouseEnter={(e) => handleMouseEnter(e, '已误报', '用户已标记为误判的舆情数量\n\n这些舆情不会被计入风险指标\n可以随时恢复为负面舆情')}
+              onMouseLeave={handleMouseLeave}
+            >
               <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">已误报</p>
               <p className="font-display text-3xl font-bold text-slate-200">{stats.dismissed}</p>
             </div>
@@ -283,7 +607,17 @@ const OpinionDashboard = () => {
           <div className="rounded-3xl border border-slate-800/70 bg-slate-900/50 p-6 backdrop-blur">
             <div className="flex items-center justify-between">
               <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400">压力走势</h2>
-              <BarChart3 className="h-4 w-4 text-slate-500" />
+              <div className="flex items-center gap-2">
+                <select
+                  value={trendMode}
+                  onChange={(e) => setTrendMode(e.target.value as "count" | "score")}
+                  className="rounded-lg border border-slate-800 bg-slate-950 px-2 py-1 text-xs text-slate-200"
+                >
+                  <option value="count">舆情数量</option>
+                  <option value="score">平均风险分</option>
+                </select>
+                <BarChart3 className="h-4 w-4 text-slate-500" />
+              </div>
             </div>
             <div className="mt-6 h-40">
               <ResponsiveContainer width="100%" height="100%">
@@ -294,7 +628,7 @@ const OpinionDashboard = () => {
                       <stop offset="100%" stopColor="#6366f1" stopOpacity={0.05} />
                     </linearGradient>
                   </defs>
-                  <Area dataKey="value" stroke="#6366f1" strokeWidth={2} fill="url(#trendGradient)" />
+                  <Area dataKey={trendMode === "count" ? "count" : "avgScore"} stroke="#6366f1" strokeWidth={2} fill="url(#trendGradient)" />
                   <Tooltip
                     contentStyle={{
                       background: "#0f172a",
@@ -305,6 +639,54 @@ const OpinionDashboard = () => {
                     labelStyle={{ color: "#94a3b8" }}
                   />
                 </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          <div className="rounded-3xl border border-slate-800/70 bg-slate-900/50 p-6">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400">医院舆情对比</h2>
+              <Activity className="h-4 w-4 text-slate-500" />
+            </div>
+            <div className="mt-6 h-48">
+              <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={hospitalComparisonData.slice(0, 5)}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                <XAxis
+                  dataKey="hospital"
+                  stroke="#475569"
+                  fontSize={11}
+                  tick={{ fill: "#94a3b8" }}
+                  angle={-30}
+                  textAnchor="end"
+                  height={60}
+                />
+                <YAxis stroke="#475569" fontSize={11} tick={{ fill: "#94a3b8" }} />
+                <Tooltip
+                  contentStyle={{
+                    background: "#0f172a",
+                    border: "1px solid #1f2937",
+                    borderRadius: "12px",
+                    color: "#e2e8f0",
+                  }}
+                  labelStyle={{ color: "#94a3b8" }}
+                />
+                <Legend
+                  content={() => (
+                    <ul className="flex items-center justify-center gap-4 text-xs">
+                      {hospitalLegendItems.map((item) => (
+                        <li key={item.id} className="flex items-center gap-2">
+                          <span className="h-2 w-2 rounded-sm" style={{ backgroundColor: item.color }} />
+                          <span style={{ color: item.color }}>{item.label}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                />
+                <Bar dataKey="low" name="低危" stackId="a" fill="#10b981" radius={[0, 0, 0, 0]} />
+                <Bar dataKey="medium" name="中危" stackId="a" fill="#f97316" radius={[0, 0, 0, 0]} />
+                <Bar dataKey="high" name="高危" stackId="a" fill="#ef4444" radius={[0, 0, 0, 0]} />
+              </BarChart>
               </ResponsiveContainer>
             </div>
           </div>
@@ -347,6 +729,62 @@ const OpinionDashboard = () => {
         </section>
 
         <section className="col-span-12 lg:col-span-8 space-y-6">
+          <div className="grid grid-cols-1 gap-6">
+            <div className="grid grid-cols-2 gap-6">
+              <div className="rounded-3xl border border-slate-800/70 bg-slate-900/50 p-6">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400">渠道分布</h2>
+                  <PieChartIcon className="h-4 w-4 text-slate-500" />
+                </div>
+                <div className="mt-6 h-44">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={sourceDistributionData} layout="vertical">
+                      <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                      <XAxis type="number" stroke="#475569" fontSize={11} tick={{ fill: "#94a3b8" }} />
+                      <YAxis type="category" dataKey="source" stroke="#475569" fontSize={11} tick={{ fill: "#94a3b8" }} width={80} />
+                      <Tooltip
+                        contentStyle={{
+                          background: "#0f172a",
+                          border: "1px solid #1f2937",
+                          borderRadius: "12px",
+                          color: "#e2e8f0",
+                        }}
+                        labelStyle={{ color: "#94a3b8" }}
+                      />
+                      <Bar dataKey="count" fill="#6366f1" radius={[0, 8, 8, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              <div className="rounded-3xl border border-slate-800/70 bg-slate-900/50 p-6">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400">严重程度分布</h2>
+                  <TrendingUp className="h-4 w-4 text-slate-500" />
+                </div>
+                <div className="mt-6 space-y-3">
+                  {severityDistributionData.map((item) => (
+                    <div key={item.name}>
+                      <div className="flex items-center justify-between text-xs mb-1">
+                        <span className="text-slate-400">{item.name}</span>
+                        <span className="font-semibold" style={{ color: item.color }}>{item.value} 条</span>
+                      </div>
+                      <div className="h-2 w-full overflow-hidden rounded-full bg-slate-800">
+                        <div
+                          className="h-full rounded-full transition-all duration-500"
+                          style={{
+                            width: `${(item.value / Math.max(activeOpinions.length, 1)) * 100}%`,
+                            backgroundColor: item.color,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+
           <div className="flex flex-wrap items-center justify-between gap-4">
             <h2 className="font-display text-xl font-semibold">实时舆情列表</h2>
             <span className="text-xs text-slate-500">{filteredOpinions.length} 条记录</span>
@@ -480,6 +918,27 @@ const OpinionDashboard = () => {
         </section>
       </main>
 
+      {tooltipContent && (
+        <div
+          className="fixed z-50 max-w-xs animate-in fade-in duration-200"
+          style={{
+            left: `${tooltipContent.position.x}px`,
+            top: `${tooltipContent.position.y}px`,
+            transform: 'translate(-50%, 0)'
+          }}
+        >
+          <div className="rounded-2xl border border-slate-700/80 bg-slate-800/95 p-5 shadow-2xl backdrop-blur-sm">
+            <div className="flex items-center gap-3 mb-3 pb-3 border-b border-slate-700/50">
+              <div className="rounded-xl bg-gradient-to-r from-indigo-500/20 to-purple-500/20 p-2">
+                <Sparkles className="h-5 w-5 text-indigo-300" />
+              </div>
+              <h3 className="text-base font-semibold text-slate-100">{tooltipContent.title}</h3>
+            </div>
+            <p className="text-sm text-slate-300 leading-relaxed whitespace-pre-line">{tooltipContent.content}</p>
+          </div>
+        </div>
+      )}
+
       {selectedItem && (
         <div className="fixed inset-0 z-50 flex justify-end">
           <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm" onClick={() => setSelectedItem(null)} />
@@ -538,6 +997,189 @@ const OpinionDashboard = () => {
               </div>
             </div>
           </aside>
+        </div>
+      )}
+
+      {exportModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm" onClick={() => setExportModalOpen(false)} />
+          <div className="relative w-full max-w-md rounded-3xl border border-slate-800/70 bg-slate-900/95 p-6 shadow-2xl">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-lg font-semibold">导出数据</h3>
+              <button onClick={() => setExportModalOpen(false)} className="rounded-full p-2 text-slate-400 hover:bg-slate-800">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-300 mb-2">时间范围</label>
+                <div className="flex items-center gap-3">
+                  <div className="flex-1">
+                    <DatePicker
+                      selected={exportDateRange.start ? new Date(exportDateRange.start) : null}
+                      onChange={(date: Date | null) => setExportDateRange({ ...exportDateRange, start: date ? date.toISOString().split('T')[0] : "" })}
+                      selectsStart
+                      startDate={exportDateRange.start ? new Date(exportDateRange.start) : null}
+                      endDate={exportDateRange.end ? new Date(exportDateRange.end) : null}
+                      dateFormat="yyyy-MM-dd"
+                      placeholderText="开始日期"
+                      className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 focus:border-indigo-500 focus:outline-none"
+                    />
+                  </div>
+                  <span className="text-slate-500">至</span>
+                  <div className="flex-1">
+                    <DatePicker
+                      selected={exportDateRange.end ? new Date(exportDateRange.end) : null}
+                      onChange={(date: Date | null) => setExportDateRange({ ...exportDateRange, end: date ? date.toISOString().split('T')[0] : "" })}
+                      selectsEnd
+                      startDate={exportDateRange.start ? new Date(exportDateRange.start) : null}
+                      endDate={exportDateRange.end ? new Date(exportDateRange.end) : null}
+                      minDate={exportDateRange.start ? new Date(exportDateRange.start) : null}
+                      dateFormat="yyyy-MM-dd"
+                      placeholderText="结束日期"
+                      className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 focus:border-indigo-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-300 mb-2">医院筛选</label>
+                <select
+                  value={exportHospital}
+                  onChange={(e) => setExportHospital(e.target.value)}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 focus:border-indigo-500 focus:outline-none"
+                >
+                  <option value="all">全部医院</option>
+                  {hospitalOptions.filter(h => h !== 'all').map(h => (
+                    <option key={h} value={h}>{h}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="pt-4 border-t border-slate-800">
+                <p className="text-sm font-medium text-slate-300 mb-3">导出格式</p>
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => handleExport('csv')}
+                    disabled={isExporting}
+                    className="flex-1 rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm font-medium text-slate-200 transition hover:bg-slate-900 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    CSV 格式
+                  </button>
+                  <button
+                    onClick={() => handleExport('excel')}
+                    disabled={isExporting}
+                    className="flex-1 rounded-xl border border-indigo-500/40 bg-indigo-500/10 px-4 py-3 text-sm font-medium text-indigo-200 transition hover:bg-indigo-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Excel 格式
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {exportReportOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm" onClick={() => setExportReportOpen(false)} />
+          <div className="relative w-full max-w-md rounded-3xl border border-indigo-500/30 bg-slate-900/95 p-6 shadow-2xl">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-lg font-semibold">生成医院舆情报告</h3>
+              <button onClick={() => setExportReportOpen(false)} className="rounded-full p-2 text-slate-400 hover:bg-slate-800">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-300 mb-2">
+                  选择医院 <span className="text-red-400">*</span>
+                </label>
+                <select
+                  value={reportHospital}
+                  onChange={(e) => setReportHospital(e.target.value)}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 focus:border-indigo-500 focus:outline-none"
+                >
+                  <option value="all">全院汇总</option>
+                  {hospitalOptions.filter(h => h !== 'all').map(h => (
+                    <option key={h} value={h}>{h}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-300 mb-2">时间范围</label>
+                <div className="flex items-center gap-3">
+                  <div className="flex-1">
+                    <DatePicker
+                      selected={reportDateRange.start ? new Date(reportDateRange.start) : null}
+                      onChange={(date: Date | null) => setReportDateRange({ ...reportDateRange, start: date ? date.toISOString().split('T')[0] : "" })}
+                      selectsStart
+                      startDate={reportDateRange.start ? new Date(reportDateRange.start) : null}
+                      endDate={reportDateRange.end ? new Date(reportDateRange.end) : null}
+                      dateFormat="yyyy-MM-dd"
+                      placeholderText="开始日期"
+                      className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 focus:border-indigo-500 focus:outline-none"
+                    />
+                  </div>
+                  <span className="text-slate-500">至</span>
+                  <div className="flex-1">
+                    <DatePicker
+                      selected={reportDateRange.end ? new Date(reportDateRange.end) : null}
+                      onChange={(date: Date | null) => setReportDateRange({ ...reportDateRange, end: date ? date.toISOString().split('T')[0] : "" })}
+                      selectsEnd
+                      startDate={reportDateRange.start ? new Date(reportDateRange.start) : null}
+                      endDate={reportDateRange.end ? new Date(reportDateRange.end) : null}
+                      minDate={reportDateRange.start ? new Date(reportDateRange.start) : null}
+                      dateFormat="yyyy-MM-dd"
+                      placeholderText="结束日期"
+                      className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 focus:border-indigo-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+                <p className="text-xs text-slate-500 mt-1">留空则导出该医院全部时间范围</p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-300 mb-2">报告格式</label>
+                <div className="flex gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setReportFormat("pdf")}
+                    className={`flex-1 rounded-xl border px-4 py-3 text-sm font-medium transition ${
+                      reportFormat === "pdf"
+                        ? "border-indigo-500/60 bg-indigo-500/20 text-indigo-100"
+                        : "border-slate-700 bg-slate-950 text-slate-300 hover:bg-slate-900"
+                    }`}
+                  >
+                    PDF
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setReportFormat("word")}
+                    className={`flex-1 rounded-xl border px-4 py-3 text-sm font-medium transition ${
+                      reportFormat === "word"
+                        ? "border-indigo-500/60 bg-indigo-500/20 text-indigo-100"
+                        : "border-slate-700 bg-slate-950 text-slate-300 hover:bg-slate-900"
+                    }`}
+                  >
+                    Word
+                  </button>
+                </div>
+              </div>
+
+              <button
+                onClick={generateHospitalReport}
+                disabled={isGeneratingReport || !reportHospital}
+                className="w-full rounded-xl border border-indigo-500/40 bg-indigo-500/10 px-4 py-3 text-sm font-medium text-indigo-200 transition hover:bg-indigo-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isGeneratingReport ? '生成中...' : '生成报告'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

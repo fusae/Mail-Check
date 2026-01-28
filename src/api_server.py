@@ -7,14 +7,34 @@
 
 import hashlib
 import hmac
+import io
+import logging
 import os
 import re
 import sqlite3
-from datetime import datetime
+from collections import defaultdict
+from datetime import datetime, timedelta
 
 import requests
 import yaml
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_file
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+from docx import Document
+from docx.shared import Inches
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import cm
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.platypus import Image as RLImage
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+logging.basicConfig(level=logging.DEBUG)
 
 
 app = Flask(__name__)
@@ -296,17 +316,20 @@ def list_opinions():
     limit = int(request.args.get("limit", 50))
     offset = int(request.args.get("offset", 0))
 
+    logging.debug(f"list_opinions called: status={status}, limit={limit}, offset={offset}")
+
     rows = query_db(
         """
         SELECT sentiment_id, hospital_name, title, source, content, reason,
                severity, url, status, dismissed_at, processed_at
         FROM negative_sentiments
-        WHERE (? = 'all' OR status = ?)
+        WHERE (? = 'all' OR COALESCE(NULLIF(status, ''), 'active') = ?)
         ORDER BY processed_at DESC
         LIMIT ? OFFSET ?
         """,
         (status, status, limit, offset),
     )
+    logging.debug(f"Query returned {len(rows)} rows")
     return jsonify([row_to_opinion(r) for r in rows])
 
 
@@ -369,10 +392,382 @@ def call_ai(prompt):
         "max_tokens": ai_config.get("max_tokens", 800)
     }
 
-    resp = requests.post(ai_config.get("api_url"), headers=headers, json=data, timeout=30)
-    resp.raise_for_status()
-    result = resp.json()
-    return result["choices"][0]["message"]["content"]
+    api_url = ai_config.get("api_url")
+    timeout = ai_config.get("timeout", 60)
+    max_retries = ai_config.get("max_retries", 2)
+    last_exc = None
+
+    for attempt in range(1, max_retries + 2):
+        try:
+            resp = requests.post(api_url, headers=headers, json=data, timeout=timeout)
+            resp.raise_for_status()
+            result = resp.json()
+            return result["choices"][0]["message"]["content"]
+        except Exception as exc:
+            last_exc = exc
+            logging.warning(f"AI调用失败（第{attempt}次）: {exc}")
+            continue
+
+    raise last_exc
+
+
+def _parse_db_datetime(value):
+    if not value:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(value, fmt)
+        except ValueError:
+            continue
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _severity_score(severity):
+    if severity == "high":
+        return 0.92
+    if severity == "medium":
+        return 0.6
+    return 0.35
+
+
+def _query_report_data(hospital, start_date, end_date, include_dismissed=False):
+    filters = []
+    params = []
+
+    if not include_dismissed:
+        filters.append("COALESCE(NULLIF(status, ''), 'active') != 'dismissed'")
+
+    if hospital and hospital != "all":
+        filters.append("hospital_name = ?")
+        params.append(hospital)
+
+    if start_date:
+        filters.append("processed_at >= ?")
+        params.append(start_date)
+    if end_date:
+        filters.append("processed_at <= ?")
+        params.append(end_date)
+
+    where_clause = " AND ".join(filters)
+    if where_clause:
+        where_clause = "WHERE " + where_clause
+
+    rows = query_db(
+        f"""
+        SELECT sentiment_id, hospital_name, title, source, content, reason,
+               severity, url, status, dismissed_at, processed_at
+        FROM negative_sentiments
+        {where_clause}
+        ORDER BY processed_at DESC
+        """,
+        tuple(params),
+    )
+    return [row_to_opinion(r) for r in rows]
+
+
+def _group_by_date(opinions, start_dt, end_dt):
+    grouped = defaultdict(int)
+    for item in opinions:
+        ts = _parse_db_datetime(item.get("createdAt"))
+        if not ts:
+            continue
+        key = ts.strftime("%m-%d")
+        grouped[key] += 1
+
+    if start_dt and end_dt:
+        cursor = start_dt
+        while cursor <= end_dt:
+            key = cursor.strftime("%m-%d")
+            grouped.setdefault(key, 0)
+            cursor += timedelta(days=1)
+
+    return sorted(grouped.items(), key=lambda x: x[0])
+
+
+def _build_report_charts(opinions, hospital):
+    charts = {}
+
+    start_dt = min(
+        [d for d in (_parse_db_datetime(o.get("createdAt")) for o in opinions) if d],
+        default=None,
+    )
+    end_dt = max(
+        [d for d in (_parse_db_datetime(o.get("createdAt")) for o in opinions) if d],
+        default=None,
+    )
+
+    # 趋势图
+    trend = _group_by_date(opinions, start_dt, end_dt)
+    if trend:
+        labels, values = zip(*trend)
+    else:
+        labels, values = [], []
+    fig, ax = plt.subplots(figsize=(6, 2.6))
+    ax.plot(labels, values, color="#6366f1", linewidth=2)
+    ax.fill_between(range(len(values)), values, color="#6366f1", alpha=0.1)
+    ax.set_title("舆情走势")
+    ax.set_ylabel("数量")
+    ax.tick_params(axis="x", rotation=45)
+    ax.grid(alpha=0.2)
+    buf = io.BytesIO()
+    fig.tight_layout()
+    fig.savefig(buf, format="png", dpi=150)
+    plt.close(fig)
+    buf.seek(0)
+    charts["trend"] = buf
+
+    # 来源分布
+    source_count = defaultdict(int)
+    for item in opinions:
+        source_count[item.get("source") or "未知"] += 1
+    sources = list(source_count.keys())
+    values = list(source_count.values())
+    fig, ax = plt.subplots(figsize=(6, 2.6))
+    ax.barh(sources, values, color="#10b981")
+    ax.set_title("来源分布")
+    ax.set_xlabel("数量")
+    buf = io.BytesIO()
+    fig.tight_layout()
+    fig.savefig(buf, format="png", dpi=150)
+    plt.close(fig)
+    buf.seek(0)
+    charts["source"] = buf
+
+    # 严重程度分布
+    severity_count = {
+        "低危": len([o for o in opinions if o.get("severity") == "low"]),
+        "中危": len([o for o in opinions if o.get("severity") == "medium"]),
+        "高危": len([o for o in opinions if o.get("severity") == "high"]),
+    }
+    fig, ax = plt.subplots(figsize=(6, 2.6))
+    ax.bar(severity_count.keys(), severity_count.values(), color=["#10b981", "#f97316", "#ef4444"])
+    ax.set_title("严重程度分布")
+    ax.set_ylabel("数量")
+    buf = io.BytesIO()
+    fig.tight_layout()
+    fig.savefig(buf, format="png", dpi=150)
+    plt.close(fig)
+    buf.seek(0)
+    charts["severity"] = buf
+
+    # 医院舆情对比（全院汇总时）
+    hospital_count = defaultdict(lambda: {"low": 0, "medium": 0, "high": 0})
+    for item in opinions:
+        name = item.get("hospital") or "未知"
+        hospital_count[name][item.get("severity") or "low"] += 1
+
+    hospitals_sorted = sorted(hospital_count.items(), key=lambda x: sum(x[1].values()), reverse=True)[:8]
+    names = [h[0] for h in hospitals_sorted]
+    low_vals = [h[1]["low"] for h in hospitals_sorted]
+    med_vals = [h[1]["medium"] for h in hospitals_sorted]
+    high_vals = [h[1]["high"] for h in hospitals_sorted]
+
+    fig, ax = plt.subplots(figsize=(6, 2.8))
+    ax.bar(names, low_vals, color="#10b981", label="低危")
+    ax.bar(names, med_vals, bottom=low_vals, color="#f97316", label="中危")
+    bottom_high = [low_vals[i] + med_vals[i] for i in range(len(names))]
+    ax.bar(names, high_vals, bottom=bottom_high, color="#ef4444", label="高危")
+    ax.set_title("医院舆情对比")
+    ax.tick_params(axis="x", rotation=30)
+    ax.legend()
+    buf = io.BytesIO()
+    fig.tight_layout()
+    fig.savefig(buf, format="png", dpi=150)
+    plt.close(fig)
+    buf.seek(0)
+    charts["hospital"] = buf
+
+    return charts
+
+
+def _build_ai_advice(opinions, hospital, start_date, end_date):
+    if not opinions:
+        return "暂无舆情记录，无需出具处置建议。"
+
+    lines = []
+    for idx, op in enumerate(opinions[:10], 1):
+        lines.append(
+            f"{idx}. 医院:{op.get('hospital')} 标题:{op.get('title')} "
+            f"来源:{op.get('source')} 严重程度:{op.get('severity')} "
+            f"内容:{(op.get('content') or '')[:120]}"
+        )
+
+    prompt = (
+        "请基于以下舆情列表给出一段“处置建议”，不需要提及AI或模型来源，"
+        "控制在300字以内，可使用条目。\n"
+        f"医院范围:{hospital or '全院汇总'}\n"
+        f"时间范围:{start_date or '全部'} 至 {end_date or '全部'}\n"
+        "舆情列表：\n" + "\n".join(lines)
+    )
+
+    try:
+        text = call_ai(prompt).strip()
+        # 避免在报告中出现“AI/模型”字样
+        text = re.sub(r"(AI|大模型|模型|人工智能)\s*", "", text, flags=re.IGNORECASE)
+        return text.strip() or "建议：优先处理高危舆情，建立跨部门响应机制，及时澄清事实并跟进患者沟通。"
+    except Exception as exc:
+        logging.warning(f"AI建议生成失败: {exc}")
+        return "建议：优先处理高危舆情，建立跨部门响应机制，及时澄清事实并跟进患者沟通。"
+
+
+def _get_reportlab_font():
+    font_candidates = [
+        "/System/Library/Fonts/PingFang.ttc",
+        "/Library/Fonts/PingFang.ttc",
+        "/Library/Fonts/SimHei.ttf",
+        "/Library/Fonts/Songti.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/arphic/uming.ttc",
+    ]
+    for path in font_candidates:
+        if os.path.exists(path):
+            try:
+                pdfmetrics.registerFont(TTFont("CJKFont", path))
+                return "CJKFont"
+            except Exception:
+                continue
+    return "Helvetica"
+
+
+def _build_docx_report(opinions, charts, hospital, start_date, end_date, advice_text):
+    doc = Document()
+    doc.add_heading("舆情监控报告", level=1)
+    doc.add_paragraph(f"医院范围：{hospital or '全院汇总'}")
+    doc.add_paragraph(f"统计时间：{start_date or '全部'} 至 {end_date or '全部'}")
+    doc.add_paragraph(f"生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+    doc.add_heading("一、执行摘要", level=2)
+    total = len(opinions)
+    high = len([o for o in opinions if o.get("severity") == "high"])
+    medium = len([o for o in opinions if o.get("severity") == "medium"])
+    low = len([o for o in opinions if o.get("severity") == "low"])
+    avg_score = round(
+        (sum(_severity_score(o.get("severity")) for o in opinions) / total) * 100, 1
+    ) if total else 0
+    doc.add_paragraph(f"舆情总量：{total} 条")
+    doc.add_paragraph(f"高危：{high} 条 | 中危：{medium} 条 | 低危：{low} 条")
+    doc.add_paragraph(f"平均风险指数：{avg_score}")
+
+    doc.add_heading("二、趋势与分布", level=2)
+    if charts.get("trend"):
+        doc.add_paragraph("舆情走势")
+        doc.add_picture(charts["trend"], width=Inches(5.8))
+    if charts.get("severity"):
+        doc.add_paragraph("严重程度分布")
+        doc.add_picture(charts["severity"], width=Inches(5.2))
+    if charts.get("source"):
+        doc.add_paragraph("来源分布")
+        doc.add_picture(charts["source"], width=Inches(5.2))
+    if charts.get("hospital"):
+        doc.add_paragraph("医院舆情对比")
+        doc.add_picture(charts["hospital"], width=Inches(5.8))
+
+    doc.add_heading("三、重点舆情摘要", level=2)
+    top_items = sorted(
+        opinions,
+        key=lambda o: (
+            2 if o.get("severity") == "high" else 1 if o.get("severity") == "medium" else 0,
+            o.get("createdAt") or "",
+        ),
+        reverse=True,
+    )[:10]
+    for idx, item in enumerate(top_items, 1):
+        doc.add_paragraph(
+            f"{idx}. {item.get('title')}（{item.get('hospital')} / {item.get('source')}）"
+        )
+        doc.add_paragraph(f"严重程度：{item.get('severity')}  时间：{item.get('createdAt')}")
+        doc.add_paragraph(f"警示理由：{item.get('reason')}")
+        doc.add_paragraph(f"内容：{item.get('content')}")
+        if item.get("url"):
+            doc.add_paragraph(f"原文链接：{item.get('url')}")
+
+    doc.add_heading("四、处置建议", level=2)
+    doc.add_paragraph(advice_text)
+
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return buffer
+
+
+def _build_pdf_report(opinions, charts, hospital, start_date, end_date, advice_text):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=1.5 * cm, leftMargin=1.5 * cm, topMargin=1.5 * cm, bottomMargin=1.5 * cm)
+
+    font_name = _get_reportlab_font()
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name="CJK", fontName=font_name, fontSize=10, leading=14))
+    styles.add(ParagraphStyle(name="CJKTitle", fontName=font_name, fontSize=16, leading=20, spaceAfter=12))
+    styles.add(ParagraphStyle(name="CJKHeading", fontName=font_name, fontSize=12, leading=16, spaceBefore=10, spaceAfter=6))
+
+    story = []
+    story.append(Paragraph("舆情监控报告", styles["CJKTitle"]))
+    story.append(Paragraph(f"医院范围：{hospital or '全院汇总'}", styles["CJK"]))
+    story.append(Paragraph(f"统计时间：{start_date or '全部'} 至 {end_date or '全部'}", styles["CJK"]))
+    story.append(Paragraph(f"生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles["CJK"]))
+    story.append(Spacer(1, 8))
+
+    total = len(opinions)
+    high = len([o for o in opinions if o.get("severity") == "high"])
+    medium = len([o for o in opinions if o.get("severity") == "medium"])
+    low = len([o for o in opinions if o.get("severity") == "low"])
+    avg_score = round(
+        (sum(_severity_score(o.get("severity")) for o in opinions) / total) * 100, 1
+    ) if total else 0
+
+    story.append(Paragraph("一、执行摘要", styles["CJKHeading"]))
+    summary_table = Table(
+        [["舆情总量", total], ["高危", high], ["中危", medium], ["低危", low], ["平均风险指数", avg_score]],
+        colWidths=[4 * cm, 4 * cm],
+    )
+    summary_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f1f5f9")),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5f5")),
+                ("FONTNAME", (0, 0), (-1, -1), font_name),
+            ]
+        )
+    )
+    story.append(summary_table)
+    story.append(Spacer(1, 10))
+
+    story.append(Paragraph("二、趋势与分布", styles["CJKHeading"]))
+    for key, label in [("trend", "舆情走势"), ("severity", "严重程度分布"), ("source", "来源分布"), ("hospital", "医院舆情对比")]:
+        if charts.get(key):
+            story.append(Paragraph(label, styles["CJK"]))
+            img = RLImage(charts[key], width=16 * cm, height=6 * cm)
+            story.append(img)
+            story.append(Spacer(1, 6))
+
+    story.append(Paragraph("三、重点舆情摘要", styles["CJKHeading"]))
+    top_items = sorted(
+        opinions,
+        key=lambda o: (
+            2 if o.get("severity") == "high" else 1 if o.get("severity") == "medium" else 0,
+            o.get("createdAt") or "",
+        ),
+        reverse=True,
+    )[:10]
+    for idx, item in enumerate(top_items, 1):
+        story.append(Paragraph(f"{idx}. {item.get('title')}（{item.get('hospital')} / {item.get('source')}）", styles["CJK"]))
+        story.append(Paragraph(f"严重程度：{item.get('severity')}  时间：{item.get('createdAt')}", styles["CJK"]))
+        story.append(Paragraph(f"警示理由：{item.get('reason')}", styles["CJK"]))
+        story.append(Paragraph(f"内容：{item.get('content')}", styles["CJK"]))
+        if item.get("url"):
+            story.append(Paragraph(f"原文链接：{item.get('url')}", styles["CJK"]))
+        story.append(Spacer(1, 6))
+
+    story.append(Paragraph("四、处置建议", styles["CJKHeading"]))
+    story.append(Paragraph(advice_text, styles["CJK"]))
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
 
 
 @app.post("/api/ai/summary")
@@ -416,6 +811,45 @@ def ai_insight():
     )
     text = call_ai(prompt)
     return jsonify({"text": text, "generated_at": datetime.now().isoformat()})
+
+
+@app.post("/api/reports")
+def export_report():
+    payload = request.get_json(force=True) or {}
+    hospital = payload.get("hospital") or "all"
+    start_date = payload.get("start_date") or ""
+    end_date = payload.get("end_date") or ""
+    report_format = (payload.get("format") or "pdf").lower()
+    include_dismissed = bool(payload.get("include_dismissed", False))
+
+    if start_date and len(start_date) == 10:
+        start_date = f"{start_date} 00:00:00"
+    if end_date and len(end_date) == 10:
+        end_date = f"{end_date} 23:59:59"
+
+    opinions = _query_report_data(hospital, start_date, end_date, include_dismissed)
+    charts = _build_report_charts(opinions, hospital)
+    advice_text = _build_ai_advice(opinions, hospital, start_date, end_date)
+
+    date_label = datetime.now().strftime("%Y%m%d")
+    hospital_label = hospital if hospital != "all" else "全院汇总"
+
+    if report_format in ("doc", "docx", "word"):
+        buffer = _build_docx_report(opinions, charts, hospital_label, start_date, end_date, advice_text)
+        filename = f"{hospital_label}_舆情报告_{date_label}.docx"
+        return send_file(
+            buffer,
+            as_attachment=True,
+            download_name=filename,
+            mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+
+    if report_format == "pdf":
+        buffer = _build_pdf_report(opinions, charts, hospital_label, start_date, end_date, advice_text)
+        filename = f"{hospital_label}_舆情报告_{date_label}.pdf"
+        return send_file(buffer, as_attachment=True, download_name=filename, mimetype="application/pdf")
+
+    return jsonify({"error": "unsupported_format"}), 400
 
 
 @app.get('/feedback')
