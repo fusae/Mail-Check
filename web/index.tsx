@@ -153,7 +153,7 @@ const OpinionDashboard = () => {
 
   const fetchStats = async () => {
     try {
-      const resp = await fetch("/api/stats");
+      const resp = await fetch(`/api/stats?range=${timeRange}`);
       if (!resp.ok) return;
       const data = await resp.json();
       setStatsOverride({
@@ -253,6 +253,7 @@ const OpinionDashboard = () => {
 
   useEffect(() => {
     fetchTrend();
+    fetchStats();
   }, [timeRange]);
 
   const stats = useMemo(() => {
@@ -836,6 +837,24 @@ const OpinionDashboard = () => {
                       <stop offset="100%" stopColor="#6366f1" stopOpacity={0.05} />
                     </linearGradient>
                   </defs>
+                  <XAxis
+                    dataKey="label"
+                    stroke="#475569"
+                    fontSize={11}
+                    tick={{ fill: "#94a3b8" }}
+                  />
+                  <YAxis
+                    stroke="#475569"
+                    fontSize={11}
+                    tick={{ fill: "#94a3b8" }}
+                    label={{
+                      value: trendMode === "count" ? "数量" : "平均风险分",
+                      angle: -90,
+                      position: "insideLeft",
+                      fill: "#94a3b8",
+                      fontSize: 11,
+                    }}
+                  />
                   <Area dataKey={trendMode === "count" ? "count" : "avgScore"} stroke="#6366f1" strokeWidth={2} fill="url(#trendGradient)" />
                   <Tooltip
                     contentStyle={{

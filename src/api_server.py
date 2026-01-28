@@ -351,8 +351,35 @@ def list_opinions():
 
 @app.get("/api/stats")
 def get_stats():
+    range_key = request.args.get("range", "7d")
+    start_date = request.args.get("start_date", "")
+    end_date = request.args.get("end_date", "")
+
+    now = datetime.now()
+    if start_date or end_date:
+        start_dt = _parse_db_datetime(start_date) if start_date else None
+        end_dt = _parse_db_datetime(end_date) if end_date else None
+    else:
+        if range_key == "24h":
+            start_dt = now - timedelta(hours=24)
+        elif range_key == "30d":
+            start_dt = now - timedelta(days=30)
+        else:
+            start_dt = now - timedelta(days=7)
+        end_dt = now
+
+    filters = ["COALESCE(NULLIF(status,''),'active') != 'dismissed'"]
+    params = []
+    if start_dt:
+        filters.append("processed_at >= ?")
+        params.append(start_dt.strftime("%Y-%m-%d %H:%M:%S"))
+    if end_dt:
+        filters.append("processed_at <= ?")
+        params.append(end_dt.strftime("%Y-%m-%d %H:%M:%S"))
+    where_clause = " AND ".join(filters)
+
     rows = query_db(
-        """
+        f"""
         SELECT
             SUM(CASE WHEN COALESCE(NULLIF(status,''),'active') != 'dismissed' THEN 1 ELSE 0 END) AS active_total,
             SUM(CASE WHEN COALESCE(NULLIF(status,''),'active') = 'dismissed' THEN 1 ELSE 0 END) AS dismissed_total,
@@ -368,30 +395,35 @@ def get_stats():
                 ELSE 0 END) AS total_score,
             SUM(CASE WHEN COALESCE(NULLIF(status,''),'active') != 'dismissed' THEN 1 ELSE 0 END) AS score_count
         FROM negative_sentiments
+        WHERE {where_clause}
         """,
+        tuple(params),
         fetchone=True,
     )
     sources_rows = query_db(
-        """
+        f"""
         SELECT
             COALESCE(NULLIF(source,''),'未知') AS source,
             COUNT(*) AS count
         FROM negative_sentiments
-        WHERE COALESCE(NULLIF(status,''),'active') != 'dismissed'
+        WHERE {where_clause}
         GROUP BY COALESCE(NULLIF(source,''),'未知')
         ORDER BY count DESC
         LIMIT 10
-        """
+        """,
+        tuple(params),
     )
     hospital_list_rows = query_db(
-        """
+        f"""
         SELECT DISTINCT COALESCE(NULLIF(hospital_name,''),'未知') AS hospital
         FROM negative_sentiments
+        WHERE {where_clause}
         ORDER BY hospital
-        """
+        """,
+        tuple(params),
     )
     hospital_rows = query_db(
-        """
+        f"""
         SELECT
             COALESCE(NULLIF(hospital_name,''),'未知') AS hospital,
             SUM(CASE WHEN severity = 'high' THEN 1 ELSE 0 END) AS high,
@@ -399,11 +431,12 @@ def get_stats():
             SUM(CASE WHEN severity = 'low' THEN 1 ELSE 0 END) AS low,
             COUNT(*) AS total
         FROM negative_sentiments
-        WHERE COALESCE(NULLIF(status,''),'active') != 'dismissed'
+        WHERE {where_clause}
         GROUP BY COALESCE(NULLIF(hospital_name,''),'未知')
         ORDER BY total DESC
         LIMIT 10
-        """
+        """,
+        tuple(params),
     )
     score_count = rows["score_count"] or 0
     avg_score = round((rows["total_score"] or 0) / score_count * 100, 1) if score_count else 0
