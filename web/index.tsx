@@ -100,6 +100,7 @@ const OpinionDashboard = () => {
   const [timeRange, setTimeRange] = useState<"24h" | "7d" | "30d">("7d");
   const [trendMode, setTrendMode] = useState<"count" | "score">("count");
   const [tooltipContent, setTooltipContent] = useState<{ title: string; content: string; position: { x: number; y: number } } | null>(null);
+  const [statsOverride, setStatsOverride] = useState<{ total: number; dismissed: number; highRisk: number } | null>(null);
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [exportDateRange, setExportDateRange] = useState<{ start: string; end: string }>({
     start: "",
@@ -134,10 +135,26 @@ const OpinionDashboard = () => {
       } else {
         setAiAnalysis("暂无负面舆情数据。");
       }
+      fetchStats();
     } catch (err) {
       setError("无法连接后端服务，请检查 API 接口是否正常。");
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const fetchStats = async () => {
+    try {
+      const resp = await fetch("/api/stats");
+      if (!resp.ok) return;
+      const data = await resp.json();
+      setStatsOverride({
+        total: data.active_total ?? 0,
+        dismissed: data.dismissed_total ?? 0,
+        highRisk: data.high_total ?? 0,
+      });
+    } catch (err) {
+      // ignore
     }
   };
 
@@ -210,8 +227,16 @@ const OpinionDashboard = () => {
             active.length) * 100
         )
       : 0;
+    if (statsOverride) {
+      return {
+        highRisk: statsOverride.highRisk,
+        dismissed: statsOverride.dismissed,
+        total: statsOverride.total,
+        avgScore,
+      };
+    }
     return { highRisk, dismissed, total: active.length, avgScore };
-  }, [opinions]);
+  }, [opinions, statsOverride]);
 
   const hospitalOptions = useMemo(() => {
     const set = new Set(opinions.map((o) => o.hospital).filter(Boolean));

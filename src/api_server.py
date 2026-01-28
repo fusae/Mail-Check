@@ -349,6 +349,25 @@ def list_opinions():
     return jsonify([row_to_opinion(r) for r in rows])
 
 
+@app.get("/api/stats")
+def get_stats():
+    rows = query_db(
+        """
+        SELECT
+            SUM(CASE WHEN COALESCE(NULLIF(status,''),'active') != 'dismissed' THEN 1 ELSE 0 END) AS active_total,
+            SUM(CASE WHEN COALESCE(NULLIF(status,''),'active') = 'dismissed' THEN 1 ELSE 0 END) AS dismissed_total,
+            SUM(CASE WHEN severity = 'high' AND COALESCE(NULLIF(status,''),'active') != 'dismissed' THEN 1 ELSE 0 END) AS high_total
+        FROM negative_sentiments
+        """,
+        fetchone=True,
+    )
+    return jsonify({
+        "active_total": rows["active_total"] or 0,
+        "dismissed_total": rows["dismissed_total"] or 0,
+        "high_total": rows["high_total"] or 0,
+    })
+
+
 @app.get("/api/opinions/<sentiment_id>")
 def get_opinion(sentiment_id):
     row = query_db(
