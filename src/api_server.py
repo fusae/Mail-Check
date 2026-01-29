@@ -100,7 +100,7 @@ def init_database():
             url TEXT,
             status TEXT DEFAULT 'active',
             dismissed_at TEXT,
-            processed_at TEXT DEFAULT CURRENT_TIMESTAMP
+            processed_at TEXT DEFAULT (datetime('now','localtime'))
         )
     ''')
 
@@ -113,7 +113,7 @@ def init_database():
             feedback_text TEXT,
             user_id TEXT,
             feedback_time TEXT,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            created_at TEXT DEFAULT (datetime('now','localtime'))
         )
     ''')
 
@@ -126,7 +126,7 @@ def init_database():
             confidence REAL,
             enabled INTEGER DEFAULT 1,
             source_feedback_id INTEGER,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            created_at TEXT DEFAULT (datetime('now','localtime'))
         )
     ''')
 
@@ -149,6 +149,10 @@ def query_db(sql, params=(), fetchone=False):
     return rows
 
 
+def _now_local_str():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
 def row_to_opinion(row):
     return {
         "id": row["sentiment_id"],
@@ -162,7 +166,7 @@ def row_to_opinion(row):
         "url": row["url"],
         "status": row["status"] or "active",
         "dismissed_at": row["dismissed_at"],
-        "createdAt": _format_china_time(row["processed_at"]),
+        "createdAt": _format_local_time(row["processed_at"]),
     }
 
 
@@ -210,15 +214,16 @@ def save_feedback(data):
     cursor.execute('''
         INSERT INTO sentiment_feedback (
             sentiment_id, feedback_judgment, feedback_type,
-            feedback_text, user_id, feedback_time
-        ) VALUES (?, ?, ?, ?, ?, ?)
+            feedback_text, user_id, feedback_time, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
     ''', (
         data['sentiment_id'],
         data['feedback_judgment'],
         data['feedback_type'],
         data['feedback_text'],
         data['user_id'],
-        datetime.now().isoformat()
+        _now_local_str(),
+        _now_local_str(),
     ))
     feedback_id = cursor.lastrowid
     conn.commit()
@@ -233,7 +238,7 @@ def delete_negative_sentiment(sentiment_id):
         UPDATE negative_sentiments
         SET status = 'dismissed', dismissed_at = ?
         WHERE sentiment_id = ?
-    ''', (datetime.now().isoformat(), sentiment_id))
+    ''', (_now_local_str(), sentiment_id))
     conn.commit()
     conn.close()
 
@@ -313,14 +318,15 @@ def save_feedback_rules(feedback_id, rules, action):
     for rule in rules:
         cursor.execute('''
             INSERT INTO feedback_rules (
-                pattern, rule_type, action, confidence, enabled, source_feedback_id
-            ) VALUES (?, ?, ?, ?, 1, ?)
+                pattern, rule_type, action, confidence, enabled, source_feedback_id, created_at
+            ) VALUES (?, ?, ?, ?, 1, ?, ?)
         ''', (
             rule.get('pattern'),
             rule.get('rule_type', 'keyword'),
             action,
             rule.get('confidence', 0.5),
-            feedback_id
+            feedback_id,
+            _now_local_str(),
         ))
     conn.commit()
     conn.close()
@@ -519,7 +525,6 @@ def get_trend():
 
     for row in rows:
         ts = _parse_db_datetime(row["processed_at"])
-        ts = _to_china_time(ts)
         if not ts:
             continue
         label = ts.strftime(bucket_fmt)
@@ -630,21 +635,9 @@ def _parse_db_datetime(value):
         return None
 
 
-CHINA_TZ = timezone(timedelta(hours=8))
-
-
-def _to_china_time(dt):
-    if not dt:
-        return None
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=CHINA_TZ)
-    return dt.astimezone(CHINA_TZ)
-
-
-def _format_china_time(value):
+def _format_local_time(value):
     dt = _parse_db_datetime(value)
-    dt = _to_china_time(dt)
-    return dt.isoformat(timespec="seconds") if dt else value
+    return dt.strftime("%Y-%m-%d %H:%M:%S") if dt else value
 
 
 def _severity_score(severity):
@@ -1013,7 +1006,7 @@ def ai_summary():
     )
 
     text = call_ai(prompt)
-    return jsonify({"text": text, "generated_at": datetime.now().isoformat()})
+    return jsonify({"text": text, "generated_at": _now_local_str()})
 
 
 @app.post("/api/ai/insight")
@@ -1032,7 +1025,7 @@ def ai_insight():
         f"内容:{opinion.get('content')}\n"
     )
     text = call_ai(prompt)
-    return jsonify({"text": text, "generated_at": datetime.now().isoformat()})
+    return jsonify({"text": text, "generated_at": _now_local_str()})
 
 
 @app.get("/api/notification/suppress_keywords")

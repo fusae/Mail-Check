@@ -80,7 +80,7 @@ class SentimentMonitor:
                 token TEXT UNIQUE,
                 hospital_name TEXT,
                 email_date TEXT,
-                processed_at TEXT DEFAULT CURRENT_TIMESTAMP
+                processed_at TEXT DEFAULT (datetime('now','localtime'))
             )
         ''')
         
@@ -97,7 +97,7 @@ class SentimentMonitor:
                 url TEXT,
                 status TEXT DEFAULT 'active',
                 dismissed_at TEXT,
-                processed_at TEXT DEFAULT CURRENT_TIMESTAMP
+                processed_at TEXT DEFAULT (datetime('now','localtime'))
             )
         ''')
         
@@ -117,7 +117,7 @@ class SentimentMonitor:
                 feedback_text TEXT,
                 user_id TEXT,
                 feedback_time TEXT,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                created_at TEXT DEFAULT (datetime('now','localtime'))
             )
         ''')
 
@@ -128,7 +128,7 @@ class SentimentMonitor:
                 user_id TEXT,
                 sent_time TEXT,
                 status TEXT DEFAULT 'pending',
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                created_at TEXT DEFAULT (datetime('now','localtime'))
             )
         ''')
         cursor.execute('''
@@ -145,7 +145,7 @@ class SentimentMonitor:
                 confidence REAL,
                 enabled INTEGER DEFAULT 1,
                 source_feedback_id INTEGER,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                created_at TEXT DEFAULT (datetime('now','localtime'))
             )
         ''')
 
@@ -163,6 +163,9 @@ class SentimentMonitor:
         columns = {row[1] for row in cursor.fetchall()}
         if column_name not in columns:
             cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_def}")
+
+    def _now_local_str(self):
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     def is_email_processed(self, token):
         """检查邮件是否已处理"""
@@ -183,9 +186,9 @@ class SentimentMonitor:
         
         try:
             cursor.execute('''
-                INSERT INTO processed_emails (token, hospital_name, email_date)
-                VALUES (?, ?, ?)
-            ''', (token, hospital_name, email_date))
+                INSERT INTO processed_emails (token, hospital_name, email_date, processed_at)
+                VALUES (?, ?, ?, ?)
+            ''', (token, hospital_name, email_date, self._now_local_str()))
             conn.commit()
             self.logger.info(f"邮件已标记处理: {token[:20]}...")
         except sqlite3.IntegrityError:
@@ -200,8 +203,8 @@ class SentimentMonitor:
         
         cursor.execute('''
             INSERT INTO negative_sentiments 
-            (sentiment_id, hospital_name, title, source, content, reason, severity, url)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (sentiment_id, hospital_name, title, source, content, reason, severity, url, processed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             sentiment.get('id', ''),
             hospital_name,
@@ -210,7 +213,8 @@ class SentimentMonitor:
             sentiment.get('ocrData') or sentiment.get('allContent', ''),
             analysis['reason'],
             analysis['severity'],
-            sentiment.get('url', '')
+            sentiment.get('url', ''),
+            self._now_local_str()
         ))
         
         conn.commit()
@@ -228,15 +232,15 @@ class SentimentMonitor:
         elif isinstance(recipients, str):
             recipients = [recipients]
 
-        sent_time = datetime.now().isoformat()
+        sent_time = self._now_local_str()
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
         for user_id in recipients:
             cursor.execute('''
-                INSERT INTO feedback_queue (sentiment_id, user_id, sent_time)
-                VALUES (?, ?, ?)
-            ''', (sentiment_id, user_id, sent_time))
+                INSERT INTO feedback_queue (sentiment_id, user_id, sent_time, created_at)
+                VALUES (?, ?, ?, ?)
+            ''', (sentiment_id, user_id, sent_time, sent_time))
 
         conn.commit()
         conn.close()
