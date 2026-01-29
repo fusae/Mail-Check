@@ -178,7 +178,6 @@ const OpinionDashboard = () => {
   const [insightCache, setInsightCache] = useState<Record<string, string>>({});
   const [leftColHeight, setLeftColHeight] = useState<number | null>(null);
   const leftColRef = useRef<HTMLDivElement | null>(null);
-  const summaryTimerRef = useRef<number | null>(null);
   const [severityFilter, setSeverityFilter] = useState<Severity | "all">("all");
   const [hospitalFilter, setHospitalFilter] = useState("all");
   const [showDismissed, setShowDismissed] = useState(false);
@@ -224,13 +223,9 @@ const OpinionDashboard = () => {
       const data = await response.json();
       setOpinions(data);
       if (data.length > 0) {
-        setAiAnalysis("AI 总结将在稍后自动生成…");
-        if (summaryTimerRef.current) {
-          window.clearTimeout(summaryTimerRef.current);
+        if (!aiAnalysis) {
+          setAiAnalysis("未生成，点击右侧“刷新简报”获取。");
         }
-        summaryTimerRef.current = window.setTimeout(() => {
-          requestGlobalSummary(data);
-        }, 1500);
       } else {
         setAiAnalysis("暂无负面舆情数据。");
       }
@@ -355,15 +350,6 @@ const OpinionDashboard = () => {
     fetchTrend();
     fetchStats();
   }, [timeRange]);
-
-  useEffect(() => {
-    return () => {
-      if (summaryTimerRef.current) {
-        window.clearTimeout(summaryTimerRef.current);
-        summaryTimerRef.current = null;
-      }
-    };
-  }, []);
 
   useLayoutEffect(() => {
     const leftEl = leftColRef.current;
