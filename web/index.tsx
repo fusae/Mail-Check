@@ -1097,10 +1097,23 @@ const OpinionDashboard = () => {
                 </div>
                 <div className="mt-6 h-44">
                   <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={sourceDistributionData} layout="vertical">
+                    <BarChart
+                      data={sourceDistributionData}
+                      layout="vertical"
+                      margin={{ left: 16, right: 8, top: 0, bottom: 0 }}
+                    >
                       <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
                       <XAxis type="number" stroke="#475569" fontSize={11} tick={{ fill: "#94a3b8" }} />
-                      <YAxis type="category" dataKey="source" stroke="#475569" fontSize={11} tick={{ fill: "#94a3b8" }} width={80} />
+                      <YAxis
+                        type="category"
+                        dataKey="source"
+                        stroke="#475569"
+                        fontSize={11}
+                        tick={{ fill: "#94a3b8" }}
+                        width={110}
+                        tickMargin={8}
+                        interval={0}
+                      />
                       <Tooltip
                         contentStyle={{
                           background: "#0f172a",
