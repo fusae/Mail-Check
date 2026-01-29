@@ -89,12 +89,23 @@ class SentimentAnalyzer:
             # 尝试解析JSON
             try:
                 analysis = json.loads(self._extract_json_block(content))
-                
+
                 # 验证返回格式
                 if 'is_negative' not in analysis:
                     self.logger.warning("AI返回格式不正确")
                     return self._default_analysis(sentiment, error_reason="AI返回缺少is_negative字段")
-                
+
+                target_match = self._coerce_bool(analysis.get('target_hospital_match'))
+                if target_match is False:
+                    actual = analysis.get('actual_hospital') or '其他医院'
+                    return {
+                        'is_negative': False,
+                        'actual_hospital': actual,
+                        'reason': f"舆情指向{actual}，非本院负面",
+                        'severity': 'low',
+                        'confidence': 'high'
+                    }
+
                 return {
                     'is_negative': analysis.get('is_negative', False),
                     'actual_hospital': analysis.get('actual_hospital', None),
@@ -169,6 +180,17 @@ class SentimentAnalyzer:
                     self.logger.warning("AI返回格式不正确")
                     return self._default_analysis(sentiment, error_reason="AI返回缺少is_negative字段")
 
+                target_match = self._coerce_bool(analysis.get('target_hospital_match'))
+                if target_match is False:
+                    actual = analysis.get('actual_hospital') or '其他医院'
+                    return {
+                        'is_negative': False,
+                        'actual_hospital': actual,
+                        'reason': f"舆情指向{actual}，非本院负面",
+                        'severity': 'low',
+                        'confidence': 'high'
+                    }
+
                 return {
                     'is_negative': analysis.get('is_negative', False),
                     'actual_hospital': analysis.get('actual_hospital', None),
@@ -225,6 +247,11 @@ class SentimentAnalyzer:
 
         prompt = f"""你是一个专业的舆情分析助手。请判断以下内容是否对医院产生真正的负面影响。
 
+你现在扮演【{hospital_name}】的舆情专员，只判断是否对该医院造成负面影响。
+请先判断舆情主要指向的医院/机构是否为【{hospital_name}】：
+- 如果主要指向其他医院/机构（即使文本中出现本院名称），判定为“非本院舆情”，并将 is_negative 设为 false。
+- 如果确实指向【{hospital_name}】，再进行负面/非负面判断。
+
 判断标准（以下情况视为负面舆情）：
 1. 医疗事故、医疗纠纷
 2. 服务态度差、收费不合理
@@ -248,12 +275,25 @@ OCR文本（ocrData）: {ocr_content} {ocr_note}
 
 请返回JSON格式（只返回JSON，不要其他内容）:
 {{
+    "target_hospital_match": true/false,
+    "actual_hospital": "若主要指向其他医院，请写出医院名称；否则可为空",
     "is_negative": true/false,
     "reason": "简要说明判断理由（50字以内）",
     "severity": "high/medium/low"
 }}"""
         
         return prompt
+
+    def _coerce_bool(self, value):
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            text = value.strip().lower()
+            if text in ('true', 'yes', 'y', '1', '是'):
+                return True
+            if text in ('false', 'no', 'n', '0', '否'):
+                return False
+        return None
 
     def _extract_json_block(self, text):
         """从模型输出中提取JSON（兼容 ```json``` 代码块）"""
