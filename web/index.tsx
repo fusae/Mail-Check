@@ -1,6 +1,6 @@
 
 import "./index.css";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import DatePicker from "react-datepicker";
 import "react-datepicker/dist/react-datepicker.css";
@@ -175,6 +175,9 @@ const OpinionDashboard = () => {
   const [selectedItem, setSelectedItem] = useState<OpinionItem | null>(null);
   const [insightLoading, setInsightLoading] = useState(false);
   const [insightText, setInsightText] = useState("");
+  const [insightCache, setInsightCache] = useState<Record<string, string>>({});
+  const [leftColHeight, setLeftColHeight] = useState<number | null>(null);
+  const leftColRef = useRef<HTMLDivElement | null>(null);
   const [severityFilter, setSeverityFilter] = useState<Severity | "all">("all");
   const [hospitalFilter, setHospitalFilter] = useState("all");
   const [showDismissed, setShowDismissed] = useState(false);
@@ -293,6 +296,13 @@ const OpinionDashboard = () => {
 
   const handleInsight = async (item: OpinionItem) => {
     setSelectedItem(item);
+    const cached = insightCache[item.id];
+    if (cached) {
+      setInsightText(cached);
+      setInsightLoading(false);
+      return;
+    }
+
     setInsightLoading(true);
     setInsightText("");
     try {
@@ -302,7 +312,9 @@ const OpinionDashboard = () => {
         body: JSON.stringify({ opinion: item }),
       });
       const result = await res.json();
-      setInsightText(result.text || "未能生成深度洞察");
+      const text = result.text || "未能生成深度洞察";
+      setInsightText(text);
+      setInsightCache((prev) => ({ ...prev, [item.id]: text }));
     } catch (err) {
       setInsightText("无法调用 AI 洞察服务。");
     } finally {
@@ -336,6 +348,16 @@ const OpinionDashboard = () => {
     fetchTrend();
     fetchStats();
   }, [timeRange]);
+
+  useLayoutEffect(() => {
+    const leftEl = leftColRef.current;
+    if (!leftEl) return;
+    const update = () => setLeftColHeight(leftEl.offsetHeight);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(leftEl);
+    return () => observer.disconnect();
+  }, []);
 
   const stats = useMemo(() => {
     const active = opinions.filter((o) => o.status !== "dismissed");
@@ -792,7 +814,7 @@ const OpinionDashboard = () => {
         </div>
       </header>
 
-      <main className="relative z-10 mx-auto grid max-w-7xl grid-cols-12 gap-6 px-6 py-8">
+      <main className="relative z-10 mx-auto grid max-w-7xl grid-cols-12 items-stretch gap-6 px-6 py-8 lg:min-h-[calc(100vh-10rem)]">
         <section className="col-span-12 lg:hidden space-y-3">
           <div className="flex items-center gap-2 rounded-2xl border border-slate-800/60 bg-slate-900/60 px-3 py-2">
             <Calendar className="h-4 w-4 text-slate-400" />
@@ -866,7 +888,7 @@ const OpinionDashboard = () => {
           </div>
         )}
 
-          <section className="col-span-12 lg:col-span-4 space-y-6">
+          <section ref={leftColRef} className="col-span-12 lg:col-span-4 space-y-6 lg:h-full lg:min-h-0">
           <div className="grid grid-cols-2 gap-4">
             <div
               className="rounded-3xl border border-red-500/30 bg-red-500/10 p-6 cursor-help"
@@ -1044,7 +1066,10 @@ const OpinionDashboard = () => {
           </div>
         </section>
 
-        <section className="col-span-12 lg:col-span-8 space-y-6">
+        <section
+          className="col-span-12 lg:col-span-8 space-y-6 lg:flex lg:flex-col lg:gap-6 lg:h-[var(--left-col-height)] lg:min-h-0 lg:overflow-hidden"
+          style={leftColHeight ? ({ "--left-col-height": `${leftColHeight}px` } as React.CSSProperties) : undefined}
+        >
           <div className="grid grid-cols-1 gap-6">
             <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
               <div className="rounded-3xl border border-slate-800/70 bg-slate-900/50 p-6">
@@ -1101,71 +1126,73 @@ const OpinionDashboard = () => {
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <h2 className="font-display text-xl font-semibold">实时舆情列表</h2>
-            <span className="text-xs text-slate-500">
-              {filteredOpinions.length} 条记录{statsOverride ? ` / 共 ${statsOverride.total} 条` : ""}
-            </span>
-          </div>
-          <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-slate-800/70 bg-slate-900/40 px-4 py-3 text-xs text-slate-400">
-            <Filter className="h-4 w-4 text-slate-500" />
-            <div className="flex items-center gap-2">
-              <span>严重度</span>
-              <select
-                value={severityFilter}
-                onChange={(e) => setSeverityFilter(e.target.value as Severity | "all")}
-                className="rounded-lg border border-slate-800 bg-slate-950 px-2 py-1 text-xs text-slate-200"
-              >
-                <option value="all">全部</option>
-                <option value="high">高危</option>
-                <option value="medium">中危</option>
-                <option value="low">低危</option>
-              </select>
+          <div className="flex min-h-0 flex-1 flex-col gap-4">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <h2 className="font-display text-xl font-semibold">实时舆情列表</h2>
+              <span className="text-xs text-slate-500">
+                {filteredOpinions.length} 条记录{statsOverride ? ` / 共 ${statsOverride.total} 条` : ""}
+              </span>
             </div>
-            <div className="flex items-center gap-2">
-              <span>医院</span>
-              <select
-                value={hospitalFilter}
-                onChange={(e) => setHospitalFilter(e.target.value)}
-                className="rounded-lg border border-slate-800 bg-slate-950 px-2 py-1 text-xs text-slate-200"
-              >
-                {hospitalOptions.map((h) => (
-                  <option key={h} value={h}>
-                    {h === "all" ? "全部医院" : h}
-                  </option>
-                ))}
-              </select>
+            <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-slate-800/70 bg-slate-900/40 px-4 py-3 text-xs text-slate-400">
+              <Filter className="h-4 w-4 text-slate-500" />
+              <div className="flex items-center gap-2">
+                <span>严重度</span>
+                <select
+                  value={severityFilter}
+                  onChange={(e) => setSeverityFilter(e.target.value as Severity | "all")}
+                  className="rounded-lg border border-slate-800 bg-slate-950 px-2 py-1 text-xs text-slate-200"
+                >
+                  <option value="all">全部</option>
+                  <option value="high">高危</option>
+                  <option value="medium">中危</option>
+                  <option value="low">低危</option>
+                </select>
+              </div>
+              <div className="flex items-center gap-2">
+                <span>医院</span>
+                <select
+                  value={hospitalFilter}
+                  onChange={(e) => setHospitalFilter(e.target.value)}
+                  className="rounded-lg border border-slate-800 bg-slate-950 px-2 py-1 text-xs text-slate-200"
+                >
+                  {hospitalOptions.map((h) => (
+                    <option key={h} value={h}>
+                      {h === "all" ? "全部医院" : h}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={showDismissed}
+                  onChange={(e) => setShowDismissed(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-700 bg-slate-950 text-indigo-500"
+                />
+                显示误报
+              </label>
             </div>
-            <label className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={showDismissed}
-                onChange={(e) => setShowDismissed(e.target.checked)}
-                className="h-4 w-4 rounded border-slate-700 bg-slate-950 text-indigo-500"
-              />
-              显示误报
-            </label>
-          </div>
 
-          {isLoading ? (
-            <div className="flex min-h-[320px] flex-col items-center justify-center rounded-3xl border border-slate-800/70 bg-slate-900/40">
-              <Loader2 className="h-8 w-8 animate-spin text-indigo-400" />
-              <p className="mt-4 text-xs uppercase tracking-widest text-slate-500">加载中</p>
-            </div>
-          ) : filteredOpinions.length === 0 ? (
-            <div className="flex min-h-[320px] flex-col items-center justify-center rounded-3xl border border-slate-800/70 bg-slate-900/40 text-slate-500">
-              暂无舆情数据
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {filteredOpinions.map((item) => {
-                const meta = severityMeta[normalizeSeverity(item.severity)];
-                const scoreValue = Math.round((item.score || meta.score) * 100);
-                return (
-                  <article
-                    key={item.id}
-                    className={`group rounded-3xl border border-slate-800/70 bg-slate-900/45 p-6 backdrop-blur transition hover:border-indigo-500/50 ${meta.glow}`}
-                  >
+            <div className="flex-1 min-h-0">
+              {isLoading ? (
+                <div className="flex h-full min-h-[320px] flex-col items-center justify-center rounded-3xl border border-slate-800/70 bg-slate-900/40">
+                  <Loader2 className="h-8 w-8 animate-spin text-indigo-400" />
+                  <p className="mt-4 text-xs uppercase tracking-widest text-slate-500">加载中</p>
+                </div>
+              ) : filteredOpinions.length === 0 ? (
+                <div className="flex h-full min-h-[320px] flex-col items-center justify-center rounded-3xl border border-slate-800/70 bg-slate-900/40 text-slate-500">
+                  暂无舆情数据
+                </div>
+              ) : (
+                <div className="h-full space-y-4 overflow-y-auto pr-2">
+                  {filteredOpinions.map((item) => {
+                    const meta = severityMeta[normalizeSeverity(item.severity)];
+                    const scoreValue = Math.round((item.score || meta.score) * 100);
+                    return (
+                      <article
+                        key={item.id}
+                        className={`group rounded-3xl border border-slate-800/70 bg-slate-900/45 p-6 backdrop-blur transition hover:border-indigo-500/50 ${meta.glow}`}
+                      >
                     <div className="flex items-start justify-between gap-4">
                       <div>
                         <div className="flex items-center gap-3">
@@ -1229,10 +1256,12 @@ const OpinionDashboard = () => {
                       )}
                     </div>
                   </article>
-                );
-              })}
+                    );
+                  })}
+                </div>
+              )}
             </div>
-          )}
+          </div>
         </section>
       </main>
 

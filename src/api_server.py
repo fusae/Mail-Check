@@ -134,6 +134,8 @@ def init_database():
     _ensure_column(cursor, 'negative_sentiments', 'url', 'TEXT')
     _ensure_column(cursor, 'negative_sentiments', 'status', 'TEXT')
     _ensure_column(cursor, 'negative_sentiments', 'dismissed_at', 'TEXT')
+    _ensure_column(cursor, 'negative_sentiments', 'insight_text', 'TEXT')
+    _ensure_column(cursor, 'negative_sentiments', 'insight_at', 'TEXT')
 
     conn.commit()
     conn.close()
@@ -1017,6 +1019,20 @@ def ai_insight():
     if not opinion:
         return jsonify({"text": "未提供舆情内容。"}), 400
 
+    sentiment_id = opinion.get("id")
+    if sentiment_id:
+        cached = query_db(
+            "SELECT insight_text, insight_at FROM negative_sentiments WHERE sentiment_id = ?",
+            (sentiment_id,),
+            fetchone=True,
+        )
+        if cached and cached["insight_text"]:
+            return jsonify({
+                "text": cached["insight_text"],
+                "generated_at": cached["insight_at"] or _now_local_str(),
+                "cached": True,
+            })
+
     prompt = (
         "请对以下单条舆情进行传播风险点分析，并给出简要建议（100字以内）。\n"
         f"医院:{opinion.get('hospital')}\n"
@@ -1025,7 +1041,17 @@ def ai_insight():
         f"内容:{opinion.get('content')}\n"
     )
     text = call_ai(prompt)
-    return jsonify({"text": text, "generated_at": _now_local_str()})
+    generated_at = _now_local_str()
+    if sentiment_id:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE negative_sentiments SET insight_text = ?, insight_at = ? WHERE sentiment_id = ?",
+            (text, generated_at, sentiment_id),
+        )
+        conn.commit()
+        conn.close()
+    return jsonify({"text": text, "generated_at": generated_at, "cached": False})
 
 
 @app.get("/api/notification/suppress_keywords")
