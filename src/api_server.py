@@ -137,6 +137,11 @@ def init_database():
     _ensure_column(cursor, 'negative_sentiments', 'insight_text', 'TEXT')
     _ensure_column(cursor, 'negative_sentiments', 'insight_at', 'TEXT')
 
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_negative_sentiments_processed_at ON negative_sentiments(processed_at)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_negative_sentiments_status ON negative_sentiments(status)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_negative_sentiments_hospital ON negative_sentiments(hospital_name)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_negative_sentiments_sentiment_id ON negative_sentiments(sentiment_id)')
+
     conn.commit()
     conn.close()
 
@@ -155,19 +160,27 @@ def _now_local_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def row_to_opinion(row):
+def row_to_opinion(row, include_content=True, preview_len=240):
+    content = row["content"] or ""
+    if include_content:
+        content_out = content
+        truncated = False
+    else:
+        content_out = content[:preview_len]
+        truncated = len(content) > preview_len
     return {
         "id": row["sentiment_id"],
         "hospital": row["hospital_name"],
         "title": row["title"],
         "source": row["source"],
-        "content": row["content"],
+        "content": content_out,
         "reason": row["reason"],
         "severity": row["severity"],
         "score": 1.0 if row["severity"] == "high" else 0.6 if row["severity"] == "medium" else 0.3,
         "url": row["url"],
         "status": row["status"] or "active",
         "dismissed_at": row["dismissed_at"],
+        "content_truncated": truncated,
         "createdAt": _format_local_time(row["processed_at"]),
     }
 
@@ -339,8 +352,12 @@ def list_opinions():
     status = request.args.get("status", "active")
     limit = int(request.args.get("limit", 50))
     offset = int(request.args.get("offset", 0))
+    compact = request.args.get("compact", "0").lower() in ("1", "true", "yes")
+    preview_len = int(request.args.get("preview", 240))
 
-    logging.debug(f"list_opinions called: status={status}, limit={limit}, offset={offset}")
+    logging.debug(
+        f"list_opinions called: status={status}, limit={limit}, offset={offset}, compact={compact}"
+    )
 
     rows = query_db(
         """
@@ -354,7 +371,7 @@ def list_opinions():
         (status, status, limit, offset),
     )
     logging.debug(f"Query returned {len(rows)} rows")
-    return jsonify([row_to_opinion(r) for r in rows])
+    return jsonify([row_to_opinion(r, include_content=not compact, preview_len=preview_len) for r in rows])
 
 
 @app.get("/api/stats")
@@ -567,6 +584,8 @@ def search_opinions():
     query = request.args.get("query", "").strip()
     limit = int(request.args.get("limit", 50))
     offset = int(request.args.get("offset", 0))
+    compact = request.args.get("compact", "0").lower() in ("1", "true", "yes")
+    preview_len = int(request.args.get("preview", 240))
 
     if not query:
         return jsonify([])
@@ -583,7 +602,7 @@ def search_opinions():
         """,
         (like, like, like, like, limit, offset),
     )
-    return jsonify([row_to_opinion(r) for r in rows])
+    return jsonify([row_to_opinion(r, include_content=not compact, preview_len=preview_len) for r in rows])
 
 
 def call_ai(prompt):

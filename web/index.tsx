@@ -43,6 +43,7 @@ interface OpinionItem {
   url?: string;
   status: "active" | "dismissed";
   dismissed_at?: string;
+  content_truncated?: boolean;
   createdAt: string;
 }
 
@@ -218,7 +219,7 @@ const OpinionDashboard = () => {
     setIsLoading(true);
     setError(null);
     try {
-      const response = await fetch("/api/opinions?status=all");
+      const response = await fetch("/api/opinions?status=all&compact=1&preview=240");
       if (!response.ok) throw new Error("无法连接到后端接口");
       const data = await response.json();
       setOpinions(data);
@@ -296,6 +297,20 @@ const OpinionDashboard = () => {
     }
   };
 
+  const ensureFullOpinion = async (item: OpinionItem) => {
+    if (!item.content_truncated) return item;
+    try {
+      const res = await fetch(`/api/opinions/${item.id}`);
+      if (!res.ok) return item;
+      const full = await res.json();
+      setOpinions((prev) => prev.map((o) => (o.id === item.id ? { ...o, ...full } : o)));
+      setSelectedItem(full);
+      return full;
+    } catch (err) {
+      return item;
+    }
+  };
+
   const handleInsight = async (item: OpinionItem) => {
     setSelectedItem(item);
     const cached = insightCache[item.id];
@@ -308,10 +323,11 @@ const OpinionDashboard = () => {
     setInsightLoading(true);
     setInsightText("");
     try {
+      const fullItem = await ensureFullOpinion(item);
       const res = await fetch("/api/ai/insight", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ opinion: item }),
+        body: JSON.stringify({ opinion: fullItem }),
       });
       const result = await res.json();
       const text = result.text || "未能生成深度洞察";
@@ -332,7 +348,7 @@ const OpinionDashboard = () => {
     }
     setIsLoading(true);
     try {
-      const res = await fetch(`/api/search?query=${encodeURIComponent(searchTerm)}`);
+      const res = await fetch(`/api/search?query=${encodeURIComponent(searchTerm)}&compact=1&preview=240`);
       const data = await res.json();
       setOpinions(data);
     } catch (err) {
