@@ -167,15 +167,28 @@ class Notifier:
             # 构建消息内容
             if enable_markdown and not enable_html:
                 # Markdown格式
+                source = sentiment_info.get('source', '未知')
+                url = sentiment_info.get('url', '')
+                sentiment_id = sentiment_info.get('id') or sentiment_info.get('sentiment_id')
+                email_token = sentiment_info.get('email_token', '')
+
+                if url and source == '抖音':
+                    detail_url = f"https://console.microvivid.com/h5Detail?token={email_token}"
+                    url_line = f"**舆情链接：** [查看详情]({detail_url})"
+                elif url:
+                    url_line = f"**原文链接：** [{url}]({url})"
+                else:
+                    url_line = ""
+
                 message = f"""
 {message_prefix} **{title}**
 
 **医院：** {hospital_name}
 
-**来源：** {sentiment_info.get('source', '未知')}
+**来源：** {source}
 **AI判断：** {sentiment_info.get('reason', '未判断')}
 **严重程度：** {sentiment_info.get('severity', 'medium')}
-{f"**原文链接：** [{sentiment_info.get('url', '')}]({sentiment_info.get('url', '')})" if sentiment_info.get('url') else ""}
+{url_line}
 
 **详细内容：**
 {content}
@@ -184,6 +197,22 @@ class Notifier:
 """
             elif enable_html:
                 # HTML格式
+                source = sentiment_info.get('source', '未知')
+                url = sentiment_info.get('url', '')
+                sentiment_id = sentiment_info.get('id') or sentiment_info.get('sentiment_id')
+                email_token = sentiment_info.get('email_token', '')
+
+                if url and source == '抖音':
+                    detail_url = f"https://console.microvivid.com/h5Detail?token={email_token}"
+                    url_html = f'<a href="{detail_url}">查看详情</a>'
+                    link_label = "舆情链接"
+                elif url:
+                    url_html = f'<a href="{url}">{url}</a>'
+                    link_label = "原文链接"
+                else:
+                    url_html = '无'
+                    link_label = "原文链接"
+
                 message = f"""
 <html>
 <body style="font-family: Arial, sans-serif; padding: 20px; line-height: 1.6;">
@@ -210,7 +239,7 @@ class Notifier:
                 来源
             </td>
             <td style="padding:  0px; border: 1px solid #dee2e6;">
-                {sentiment_info.get('source', '未知')}
+                {source}
             </td>
         </tr>
         <tr>
@@ -234,20 +263,20 @@ class Notifier:
                 严重程度
             </td>
             <td style="padding: 0px; border: 1px solid #dee2e6;">
-                <span style="background-color: 
+                <span style="background-color:
                     {'#e74c3c' if sentiment_info.get('severity') == 'high' else
                      '#f0ad0e' if sentiment_info.get('severity') == 'medium' else
-                     '#6c757d' if sentiment_info.get('severity') == 'low' else '#95a5a6'}">
+                     '#6c757d' if sentiment_info.get('severity') == 'low' else '#95a5a6'}>
                 {sentiment_info.get('severity', 'medium')}
                 </span>
             </td>
         </tr>
         <tr>
             <td style="padding: 12px; border: 1px solid #dee2e6; font-weight: bold;">
-                原文链接
+                {link_label}
             </td>
             <td style="padding: 0px; border: 1px solid #dee2e6;">
-                {f'<a href="{sentiment_info.get("url", "")}">{sentiment_info.get("url", "无")}</a>' if sentiment_info.get('url') else '无'}
+                {url_html}
             </td>
         </tr>
         <tr>
@@ -262,7 +291,7 @@ class Notifier:
                 </td>
         </tr>
     </table>
-    
+
     <script>
         window.top.close();
     </script>
@@ -446,10 +475,22 @@ AI判断: {reason}
             reason = sentiment_info.get('reason', '未判断')
             severity = sentiment_info.get('severity', 'medium')
             url = sentiment_info.get('url', '')
+            email_token = sentiment_info.get('email_token', '')
 
             # 固定文本模板（内容部分用占位符）
             # 原文链接和反馈链接单独构建，避免在 f-string 表达式里使用转义字符（会导致 SyntaxError）
-            orig_link_line = f"**原文链接：** [{url}]({url})\n" if url else ""
+            # 抖音链接使用详情页跳转，其他来源使用原始链接
+            if url:
+                if source == '抖音':
+                    detail_url = f"https://console.microvivid.com/h5Detail?token={email_token}"
+                    orig_link_line = f"**舆情链接：** [查看详情]({detail_url})\n"
+                    self.logger.info(f"抖音舆情，使用详情页链接: {detail_url}")
+                else:
+                    orig_link_line = f"**原文链接：** [{url}]({url})\n"
+                    self.logger.info(f"非抖音舆情，使用原始链接: {url}")
+            else:
+                orig_link_line = ""
+                self.logger.warning("未获取到URL")
 
             header = f"### ⚠️ 舆情监控通知\n\n**{title}**\n\n> **医院：** {hospital_name}\n> **来源：** {source}\n> **标题：** {sent_title}\n> **AI判断：** {reason}\n> **严重程度：** {severity}\n{orig_link_line}\n**详细内容：**\n\n"
             footer = f"\n\n请及时查看详情。\n{feedback_line}"
