@@ -207,7 +207,7 @@ const OpinionDashboard = () => {
     end: ""
   });
   const [reportHospital, setReportHospital] = useState("all");
-  const [reportFormat, setReportFormat] = useState<"pdf" | "word">("pdf");
+  const [reportFormat, setReportFormat] = useState<"markdown" | "word">("word");
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
   const [suppressModalOpen, setSuppressModalOpen] = useState(false);
   const [suppressKeywords, setSuppressKeywords] = useState<string[]>([]);
@@ -668,7 +668,7 @@ const OpinionDashboard = () => {
 
     setIsGeneratingReport(true);
     try {
-      const response = await fetch("/api/reports", {
+      const response = await fetch("/api/report/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -676,7 +676,6 @@ const OpinionDashboard = () => {
           start_date: reportDateRange.start || "",
           end_date: reportDateRange.end || "",
           format: reportFormat,
-          include_dismissed: false,
         }),
       });
 
@@ -684,9 +683,32 @@ const OpinionDashboard = () => {
         throw new Error("报告生成失败");
       }
 
-      const blob = await response.blob();
+      const data = await response.json();
+      if (!data?.success) {
+        throw new Error(data?.message || "报告生成失败");
+      }
+
+      const downloadPath =
+        data?.files?.[reportFormat] ||
+        data?.files?.markdown ||
+        data?.files?.word;
+
+      if (!downloadPath) {
+        throw new Error("未返回可下载的报告文件");
+      }
+
+      const downloadUrl = downloadPath.startsWith("http")
+        ? downloadPath
+        : downloadPath;
+
+      const fileResponse = await fetch(downloadUrl);
+      if (!fileResponse.ok) {
+        throw new Error("报告下载失败");
+      }
+
+      const blob = await fileResponse.blob();
       const reportName = reportHospital === "all" ? "全院汇总" : reportHospital;
-      const filename = `${reportName}_舆情报告_${formatLocalDate(new Date())}.${reportFormat === "pdf" ? "pdf" : "docx"}`;
+      const filename = `${reportName}_舆情报告_${formatLocalDate(new Date())}.${reportFormat === "word" ? "docx" : "md"}`;
       const link = document.createElement("a");
       link.href = URL.createObjectURL(blob);
       link.download = filename;
@@ -1526,14 +1548,14 @@ const OpinionDashboard = () => {
                 <div className="flex gap-3">
                   <button
                     type="button"
-                    onClick={() => setReportFormat("pdf")}
+                    onClick={() => setReportFormat("markdown")}
                     className={`flex-1 rounded-xl border px-4 py-3 text-sm font-medium transition ${
-                      reportFormat === "pdf"
+                      reportFormat === "markdown"
                         ? "border-indigo-500/60 bg-indigo-500/20 text-indigo-100"
                         : "border-slate-700 bg-slate-950 text-slate-300 hover:bg-slate-900"
                     }`}
                   >
-                    PDF
+                    Markdown
                   </button>
                   <button
                     type="button"
