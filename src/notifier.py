@@ -170,10 +170,9 @@ class Notifier:
                 source = sentiment_info.get('source', '未知')
                 url = sentiment_info.get('url', '')
                 sentiment_id = sentiment_info.get('id') or sentiment_info.get('sentiment_id')
-                email_token = sentiment_info.get('email_token', '')
 
-                if url and source == '抖音':
-                    detail_url = f"https://console.microvivid.com/h5Detail?token={email_token}"
+                if url and source == '抖音' and sentiment_id:
+                    detail_url = f"https://console.microvivid.com/h5ListDetail?id={sentiment_id}"
                     url_line = f"**舆情链接：** [查看详情]({detail_url})"
                 elif url:
                     url_line = f"**原文链接：** [{url}]({url})"
@@ -200,10 +199,9 @@ class Notifier:
                 source = sentiment_info.get('source', '未知')
                 url = sentiment_info.get('url', '')
                 sentiment_id = sentiment_info.get('id') or sentiment_info.get('sentiment_id')
-                email_token = sentiment_info.get('email_token', '')
 
-                if url and source == '抖音':
-                    detail_url = f"https://console.microvivid.com/h5Detail?token={email_token}"
+                if url and source == '抖音' and sentiment_id:
+                    detail_url = f"https://console.microvivid.com/h5ListDetail?id={sentiment_id}"
                     url_html = f'<a href="{detail_url}">查看详情</a>'
                     link_label = "舆情链接"
                 elif url:
@@ -475,14 +473,14 @@ AI判断: {reason}
             reason = sentiment_info.get('reason', '未判断')
             severity = sentiment_info.get('severity', 'medium')
             url = sentiment_info.get('url', '')
-            email_token = sentiment_info.get('email_token', '')
+            sentiment_id = sentiment_info.get('id') or sentiment_info.get('sentiment_id')
 
             # 固定文本模板（内容部分用占位符）
             # 原文链接和反馈链接单独构建，避免在 f-string 表达式里使用转义字符（会导致 SyntaxError）
             # 抖音链接使用详情页跳转，其他来源使用原始链接
             if url:
-                if source == '抖音':
-                    detail_url = f"https://console.microvivid.com/h5Detail?token={email_token}"
+                if source == '抖音' and sentiment_id:
+                    detail_url = f"https://console.microvivid.com/h5ListDetail?id={sentiment_id}"
                     orig_link_line = f"**舆情链接：** [查看详情]({detail_url})\n"
                     self.logger.info(f"抖音舆情，使用详情页链接: {detail_url}")
                 else:

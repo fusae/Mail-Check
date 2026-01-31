@@ -322,8 +322,7 @@ class SentimentMonitor:
                         'title': sentiment.get('title', '无标题'),
                         'reason': analysis.get('reason', ''),
                         'severity': analysis.get('severity', 'medium'),
-                        'url': sentiment.get('url', ''),
-                        'email_token': token
+                        'url': sentiment.get('url', '')
                     }
                     content = sentiment.get('allContent', '') or sentiment.get('content', '')
                     notify_result = self.notifier.send(
