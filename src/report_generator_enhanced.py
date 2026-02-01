@@ -457,7 +457,7 @@ class EnhancedReportGenerator:
             type_counts = df['类型'].value_counts()
         else:
             # 从内容推断类型
-            type_counts = self._infer_event_types(df)
+            type_counts = self._infer_event_types(df).value_counts()
 
         distribution = {}
         for event_type, count in type_counts.items():
@@ -708,8 +708,11 @@ class EnhancedReportGenerator:
 
     def _analyze_event_sentiment(self, df: pd.DataFrame) -> Dict[str, Any]:
         """分析事件情感"""
-        # 合并所有内容
-        all_content = ' '.join(df['内容'].fillna('') + ' ' + df['标题'].fillna(''))
+        # 合并内容（优先使用“警示理由/ reason”）
+        if '警示理由' in df.columns:
+            all_content = ' '.join(df['警示理由'].fillna(''))
+        else:
+            all_content = ' '.join(df['内容'].fillna('') + ' ' + df['标题'].fillna(''))
 
         # 情感统计
         emotion_counts = Counter()
@@ -858,8 +861,11 @@ class EnhancedReportGenerator:
         if len(df) == 0:
             return {'emotion_distribution': {}, 'top_keywords': [], 'public_demands': []}
 
-        # 合并所有内容
-        all_content = ' '.join(df['内容'].fillna('') + ' ' + df['标题'].fillna(''))
+        # 合并所有内容（优先使用“警示理由/ reason”）
+        if '警示理由' in df.columns:
+            all_content = ' '.join(df['警示理由'].fillna(''))
+        else:
+            all_content = ' '.join(df['内容'].fillna('') + ' ' + df['标题'].fillna(''))
 
         # 情感统计
         emotion_counts = Counter()
@@ -1238,6 +1244,98 @@ class EnhancedReportGenerator:
 
         return '\n'.join(lines)
 
+    def generate_word_report(self, report_data: Dict[str, Any], output_path: str) -> None:
+        """生成Word格式报告（基于Markdown渲染为简化版排版）"""
+        if not DOCX_AVAILABLE:
+            raise ImportError("需要安装python-docx: pip install python-docx")
+
+        markdown_text = self.generate_markdown_report(report_data)
+        doc = Document()
+        self._render_markdown_to_docx(doc, markdown_text)
+        doc.save(output_path)
+
+    def _render_markdown_to_docx(self, doc: Document, markdown_text: str) -> None:
+        """将Markdown文本渲染为基础Word格式"""
+        lines = markdown_text.splitlines()
+        i = 0
+        while i < len(lines):
+            line = lines[i].rstrip()
+
+            # 跳过分隔线
+            if line.strip() in ("---", "----", "-----"):
+                i += 1
+                continue
+
+            # 代码块
+            if line.strip().startswith("```"):
+                i += 1
+                code_lines = []
+                while i < len(lines) and not lines[i].strip().startswith("```"):
+                    code_lines.append(lines[i].rstrip())
+                    i += 1
+                if code_lines:
+                    doc.add_paragraph("\n".join(code_lines))
+                i += 1
+                continue
+
+            # 表格
+            if line.strip().startswith("|"):
+                table_lines = []
+                while i < len(lines) and lines[i].strip().startswith("|"):
+                    table_lines.append(lines[i].strip())
+                    i += 1
+
+                rows = []
+                for row_line in table_lines:
+                    parts = [p.strip() for p in row_line.strip("|").split("|")]
+                    rows.append(parts)
+
+                # 跳过对齐行
+                if len(rows) > 1 and all(set(cell) <= set("-:") for cell in rows[1]):
+                    rows.pop(1)
+
+                if rows:
+                    cols = max(len(r) for r in rows)
+                    table = doc.add_table(rows=1, cols=cols)
+                    table.style = 'Table Grid'
+                    hdr_cells = table.rows[0].cells
+                    for idx, value in enumerate(rows[0]):
+                        hdr_cells[idx].text = value
+                    for row in rows[1:]:
+                        row_cells = table.add_row().cells
+                        for idx, value in enumerate(row):
+                            row_cells[idx].text = value
+                continue
+
+            # 标题
+            if line.startswith("#### "):
+                doc.add_heading(line[5:], level=4)
+                i += 1
+                continue
+            if line.startswith("### "):
+                doc.add_heading(line[4:], level=3)
+                i += 1
+                continue
+            if line.startswith("## "):
+                doc.add_heading(line[3:], level=2)
+                i += 1
+                continue
+            if line.startswith("# "):
+                doc.add_heading(line[2:], level=1)
+                i += 1
+                continue
+
+            # 列表
+            if line.startswith("- ") or line.startswith("* "):
+                doc.add_paragraph(line[2:], style='List Bullet')
+                i += 1
+                continue
+
+            # 普通文本
+            if line.strip():
+                doc.add_paragraph(line)
+            i += 1
+
     def _format_summary_section(self, data: Dict[str, Any]) -> List[str]:
         """格式化概述部分"""
         lines = []
@@ -1374,10 +1472,6 @@ class EnhancedReportGenerator:
                         lines.append(f"- {emotion}: {count}次")
 
                 if sentiment.get('top_keywords'):
-                    lines.append("\n**高频关键词（TOP 10）：**")
-                    for kw in sentiment['top_keywords'][:10]:
-                        lines.append(f"- {kw['keyword']} ({kw['count']}次)")
-
                 if sentiment.get('public_demands'):
                     lines.append("\n**公众诉求：**")
                     for demand in sentiment['public_demands']:
@@ -1428,6 +1522,10 @@ class EnhancedReportGenerator:
         # 关键词
         lines.append("\n### 4.2 关键词云图\n")
         keywords = sentiment.get('top_keywords', [])
+        wordcloud_image = sentiment.get('wordcloud_image')
+
+        if wordcloud_image:
+            lines.append(f"![关键词云图]({wordcloud_image})\n")
 
         if keywords:
             lines.append("**高频词（TOP 20）：**\n")

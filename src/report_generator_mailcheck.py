@@ -12,14 +12,14 @@ from pathlib import Path
 from typing import Dict, List, Any
 import os
 import json
+import tempfile
+import subprocess
 
 try:
-    from docx import Document
-    from docx.shared import Inches, Pt, RGBColor
-    DOCX_AVAILABLE = True
+    from wordcloud import WordCloud
+    WORDCLOUD_AVAILABLE = True
 except ImportError:
-    DOCX_AVAILABLE = False
-
+    WORDCLOUD_AVAILABLE = False
 
 class MailCheckReportGenerator:
     """Mail-Check舆情报告生成器"""
@@ -260,6 +260,11 @@ class MailCheckReportGenerator:
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         filename = f"{hospital_name}_舆情报告_{timestamp}"
 
+        # 生成关键词云（可选）
+        wordcloud_name = self._generate_wordcloud(report_data, output_dir, filename)
+        if wordcloud_name:
+            report_data.setdefault('sentiment', {})['wordcloud_image'] = wordcloud_name
+
         result = {
             'success': True,
             'hospital_name': hospital_name,
@@ -269,23 +274,44 @@ class MailCheckReportGenerator:
             'files': {}
         }
 
+        # 先生成Markdown内容（Word将基于Markdown转换）
+        md_content = gen.generate_markdown_report(report_data)
+
         # Markdown格式
         if output_format in ['markdown', 'md', 'both']:
             md_path = output_dir / f"{filename}.md"
             print(f"[INFO] 正在生成Markdown报告...")
-            md_content = gen.generate_markdown_report(report_data)
             with open(md_path, 'w', encoding='utf-8') as f:
                 f.write(md_content)
             result['files']['markdown'] = str(md_path)
             print(f"[OK] Markdown报告: {md_path}")
 
-        # Word格式
-        if output_format in ['word', 'docx', 'both'] and DOCX_AVAILABLE:
+        # Word格式（基于Markdown转换）
+        if output_format in ['word', 'docx', 'both']:
             docx_path = output_dir / f"{filename}.docx"
             print(f"[INFO] 正在生成Word报告...")
-            gen.generate_word_report(report_data, str(docx_path))
+
+            # 如果没有保存Markdown文件，则使用临时文件
+            temp_md_path = None
+            if 'markdown' in result['files']:
+                md_for_docx = result['files']['markdown']
+            else:
+                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.md', dir=str(output_dir))
+                temp_file.write(md_content.encode('utf-8'))
+                temp_file.flush()
+                temp_file.close()
+                temp_md_path = temp_file.name
+                md_for_docx = temp_md_path
+
+            self._convert_markdown_to_docx(md_for_docx, str(docx_path))
             result['files']['word'] = str(docx_path)
             print(f"[OK] Word报告: {docx_path}")
+
+            if temp_md_path:
+                try:
+                    os.remove(temp_md_path)
+                except OSError:
+                    pass
 
         # 添加摘要
         result['summary'] = report_data['summary']
@@ -293,6 +319,97 @@ class MailCheckReportGenerator:
 
         self.close()
         return result
+
+    def _find_chinese_font(self) -> str | None:
+        """尝试寻找系统中文字体路径"""
+        candidates = [
+            # macOS
+            "/System/Library/Fonts/PingFang.ttc",
+            "/System/Library/Fonts/STHeiti Light.ttc",
+            "/System/Library/Fonts/STHeiti Medium.ttc",
+            "/Library/Fonts/Arial Unicode.ttf",
+            # Linux (common)
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+            "/usr/share/fonts/truetype/arphic/ukai.ttc",
+            "/usr/share/fonts/truetype/arphic/uming.ttc",
+            # Windows (if mounted)
+            "C:\\Windows\\Fonts\\msyh.ttc",
+            "C:\\Windows\\Fonts\\simhei.ttf",
+        ]
+        for path in candidates:
+            if os.path.exists(path):
+                return path
+        return None
+
+    def _generate_wordcloud(self, report_data: Dict[str, Any], output_dir: Path, filename: str) -> str | None:
+        """根据关键词生成词云图片，返回相对文件名"""
+        if not WORDCLOUD_AVAILABLE:
+            print("[WARN] 未安装wordcloud，跳过关键词云生成")
+            return None
+
+        sentiment = report_data.get('sentiment', {})
+        keywords = sentiment.get('top_keywords', [])
+        if not keywords:
+            return None
+
+        font_path = self._find_chinese_font()
+        if not font_path:
+            print("[WARN] 未找到中文字体，跳过关键词云生成")
+            return None
+
+        freqs: Dict[str, int] = {}
+        for item in keywords:
+            if isinstance(item, dict):
+                key = item.get('keyword')
+                count = item.get('count', 1)
+            else:
+                try:
+                    key, count = item
+                except Exception:
+                    continue
+            if not key:
+                continue
+            freqs[str(key)] = int(count) if count else 1
+
+        if not freqs:
+            return None
+
+        wc = WordCloud(
+            font_path=font_path,
+            width=1200,
+            height=800,
+            background_color="white",
+            colormap="viridis"
+        )
+        wc.generate_from_frequencies(freqs)
+
+        image_name = f"{filename}_wordcloud.png"
+        image_path = output_dir / image_name
+        wc.to_file(str(image_path))
+        return image_name
+
+    def _convert_markdown_to_docx(self, md_path: str, docx_path: str) -> None:
+        """将Markdown转换为Word（优先pypandoc，其次调用pandoc命令）"""
+        # 优先使用pypandoc
+        try:
+            import pypandoc  # type: ignore
+
+            pypandoc.convert_file(md_path, 'docx', outputfile=docx_path)
+            return
+        except Exception:
+            pass
+
+        # 退回使用pandoc命令行
+        try:
+            subprocess.run(['pandoc', md_path, '-o', docx_path], check=True)
+            return
+        except FileNotFoundError as exc:
+            raise RuntimeError("未找到pandoc，请先安装pandoc或pypandoc。") from exc
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(f"pandoc转换失败: {exc}") from exc
 
 
 def main():
