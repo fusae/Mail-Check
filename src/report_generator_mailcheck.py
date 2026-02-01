@@ -264,6 +264,7 @@ class MailCheckReportGenerator:
         wordcloud_name = self._generate_wordcloud(report_data, output_dir, filename)
         if wordcloud_name:
             report_data.setdefault('sentiment', {})['wordcloud_image'] = wordcloud_name
+        wordcloud_path = output_dir / wordcloud_name if wordcloud_name else None
 
         result = {
             'success': True,
@@ -304,6 +305,8 @@ class MailCheckReportGenerator:
                 md_for_docx = temp_md_path
 
             self._convert_markdown_to_docx(md_for_docx, str(docx_path))
+            if wordcloud_path and wordcloud_path.exists():
+                self._embed_wordcloud_in_docx(str(docx_path), str(wordcloud_path))
             result['files']['word'] = str(docx_path)
             print(f"[OK] Word报告: {docx_path}")
 
@@ -382,7 +385,9 @@ class MailCheckReportGenerator:
             width=1200,
             height=800,
             background_color="white",
-            colormap="viridis"
+            colormap="viridis",
+            prefer_horizontal=1.0,
+            max_rotation=0
         )
         wc.generate_from_frequencies(freqs)
 
@@ -410,6 +415,41 @@ class MailCheckReportGenerator:
             raise RuntimeError("未找到pandoc，请先安装pandoc或pypandoc。") from exc
         except subprocess.CalledProcessError as exc:
             raise RuntimeError(f"pandoc转换失败: {exc}") from exc
+
+    def _embed_wordcloud_in_docx(self, docx_path: str, image_path: str) -> None:
+        """将关键词云图片插入到Word文档中"""
+        try:
+            from docx import Document
+            from docx.shared import Inches
+            from docx.text.paragraph import Paragraph
+            from docx.oxml import OxmlElement
+        except ImportError:
+            print("[WARN] 未安装python-docx，无法嵌入关键词云图片")
+            return
+
+        def _insert_paragraph_after(paragraph: Paragraph, text: str = "") -> Paragraph:
+            new_p = OxmlElement("w:p")
+            paragraph._p.addnext(new_p)
+            new_para = Paragraph(new_p, paragraph._parent)
+            if text:
+                new_para.add_run(text)
+            return new_para
+
+        doc = Document(docx_path)
+        target = None
+        for p in doc.paragraphs:
+            if "关键词云图" in p.text:
+                target = p
+                break
+
+        if target:
+            pic_par = _insert_paragraph_after(target)
+            pic_par.add_run().add_picture(image_path, width=Inches(5.5))
+        else:
+            doc.add_heading("关键词云图", level=3)
+            doc.add_picture(image_path, width=Inches(5.5))
+
+        doc.save(docx_path)
 
 
 def main():
