@@ -208,20 +208,20 @@ class MailCheckReportGenerator:
 
         print(f"[INFO] 获取到 {len(df)} 条舆情数据")
 
-        # 导入之前创建的report_generator
+        # 导入增强版report_generator
         try:
             import sys
             # 添加src目录到路径
             current_dir = os.path.dirname(os.path.abspath(__file__))
             sys.path.insert(0, current_dir)
 
-            from report_generator import ReportGenerator
-            gen = ReportGenerator()
+            from report_generator_enhanced import EnhancedReportGenerator
+            gen = EnhancedReportGenerator()
         except ImportError:
-            print("[ERROR] 无法导入ReportGenerator，请确保report_generator.py在src目录下")
+            print("[ERROR] 无法导入EnhancedReportGenerator，请确保report_generator_enhanced.py在src目录下")
             return {
                 'success': False,
-                'message': '缺少report_generator模块'
+                'message': '缺少report_generator_enhanced模块'
             }
 
         # 确定医院名称
@@ -273,7 +273,9 @@ class MailCheckReportGenerator:
         if output_format in ['markdown', 'md', 'both']:
             md_path = output_dir / f"{filename}.md"
             print(f"[INFO] 正在生成Markdown报告...")
-            gen.generate_markdown_report(report_data, str(md_path))
+            md_content = gen.generate_markdown_report(report_data)
+            with open(md_path, 'w', encoding='utf-8') as f:
+                f.write(md_content)
             result['files']['markdown'] = str(md_path)
             print(f"[OK] Markdown报告: {md_path}")
 
