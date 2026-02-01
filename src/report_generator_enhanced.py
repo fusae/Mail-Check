@@ -1471,7 +1471,6 @@ class EnhancedReportGenerator:
                     for emotion, count in sentiment['emotion_distribution'].items():
                         lines.append(f"- {emotion}: {count}次")
 
-                if sentiment.get('top_keywords'):
                 if sentiment.get('public_demands'):
                     lines.append("\n**公众诉求：**")
                     for demand in sentiment['public_demands']:
