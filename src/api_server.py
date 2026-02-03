@@ -53,7 +53,25 @@ def _write_config_file(cfg):
 config = load_config()
 ai_config = config.get('ai', {})
 feedback_config = config.get('feedback', {})
+_default_cors_origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:10088",
+    "http://127.0.0.1:10088",
+]
+CORS_ORIGINS = config.get("runtime", {}).get("cors_origins") or _default_cors_origins
 REPORTS_DIR = os.path.join(project_root, 'data', 'reports')
+
+
+@app.after_request
+def add_cors_headers(response):
+    origin = request.headers.get("Origin")
+    if origin and origin in CORS_ORIGINS:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
+        response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
+    return response
 
 
 def init_database():
@@ -327,41 +345,58 @@ def get_stats():
     time_where = f"WHERE {time_clause}" if time_clause else ""
     active_where = f"WHERE {active_clause}" if active_clause else ""
 
-    proc_cond = ""
-    dis_cond = ""
-    stats_params = {}
+    status_expr = "COALESCE(NULLIF(status,''),'active')"
+
+    proc_params = []
     if start_dt:
-        proc_cond += " AND processed_at >= :start_proc"
-        dis_cond += " AND dismissed_at >= :start_dis"
-        stats_params["start_proc"] = start_dt.strftime("%Y-%m-%d %H:%M:%S")
-        stats_params["start_dis"] = start_dt.strftime("%Y-%m-%d %H:%M:%S")
+        proc_params.append(start_dt.strftime("%Y-%m-%d %H:%M:%S"))
     if end_dt:
-        proc_cond += " AND processed_at <= :end_proc"
-        dis_cond += " AND dismissed_at <= :end_dis"
-        stats_params["end_proc"] = end_dt.strftime("%Y-%m-%d %H:%M:%S")
-        stats_params["end_dis"] = end_dt.strftime("%Y-%m-%d %H:%M:%S")
+        proc_params.append(end_dt.strftime("%Y-%m-%d %H:%M:%S"))
 
     rows = query_db(
         f"""
         SELECT
-            SUM(CASE WHEN COALESCE(NULLIF(status,''),'active') != 'dismissed'{proc_cond} THEN 1 ELSE 0 END) AS active_total,
-            SUM(CASE WHEN COALESCE(NULLIF(status,''),'active') = 'dismissed'{dis_cond} THEN 1 ELSE 0 END) AS dismissed_total,
-            SUM(CASE WHEN severity = 'high' AND COALESCE(NULLIF(status,''),'active') != 'dismissed'{proc_cond} THEN 1 ELSE 0 END) AS high_total,
-            SUM(CASE WHEN severity = 'medium' AND COALESCE(NULLIF(status,''),'active') != 'dismissed'{proc_cond} THEN 1 ELSE 0 END) AS medium_total,
-            SUM(CASE WHEN severity = 'low' AND COALESCE(NULLIF(status,''),'active') != 'dismissed'{proc_cond} THEN 1 ELSE 0 END) AS low_total,
-            SUM(CASE WHEN COALESCE(NULLIF(status,''),'active') != 'dismissed'{proc_cond}
+            SUM(CASE WHEN {status_expr} != 'dismissed' THEN 1 ELSE 0 END) AS active_total,
+            SUM(CASE WHEN severity = 'high' AND {status_expr} != 'dismissed' THEN 1 ELSE 0 END) AS high_total,
+            SUM(CASE WHEN severity = 'medium' AND {status_expr} != 'dismissed' THEN 1 ELSE 0 END) AS medium_total,
+            SUM(CASE WHEN severity = 'low' AND {status_expr} != 'dismissed' THEN 1 ELSE 0 END) AS low_total,
+            SUM(CASE WHEN {status_expr} != 'dismissed'
                 THEN CASE
                     WHEN severity = 'high' THEN 0.92
                     WHEN severity = 'medium' THEN 0.6
                     ELSE 0.35
                 END
                 ELSE 0 END) AS total_score,
-            SUM(CASE WHEN COALESCE(NULLIF(status,''),'active') != 'dismissed'{proc_cond} THEN 1 ELSE 0 END) AS score_count
+            SUM(CASE WHEN {status_expr} != 'dismissed' THEN 1 ELSE 0 END) AS score_count
         FROM negative_sentiments
+        {time_where}
         """,
-        stats_params,
+        tuple(proc_params),
         fetchone=True,
     )
+
+    dis_filters = []
+    dis_params = []
+    if start_dt:
+        dis_filters.append("dismissed_at >= ?")
+        dis_params.append(start_dt.strftime("%Y-%m-%d %H:%M:%S"))
+    if end_dt:
+        dis_filters.append("dismissed_at <= ?")
+        dis_params.append(end_dt.strftime("%Y-%m-%d %H:%M:%S"))
+    dis_clause = " AND ".join(dis_filters)
+    dis_where = f"AND {dis_clause}" if dis_clause else ""
+
+    dismissed_row = query_db(
+        f"""
+        SELECT COUNT(*) AS dismissed_total
+        FROM negative_sentiments
+        WHERE {status_expr} = 'dismissed'
+        {dis_where}
+        """,
+        tuple(dis_params),
+        fetchone=True,
+    )
+    dismissed_total = (dismissed_row or {}).get("dismissed_total", 0)
     sources_rows = query_db(
         f"""
         SELECT
@@ -404,7 +439,7 @@ def get_stats():
     avg_score = round((rows["total_score"] or 0) / score_count * 100, 1) if score_count else 0
     return jsonify({
         "active_total": rows["active_total"] or 0,
-        "dismissed_total": rows["dismissed_total"] or 0,
+        "dismissed_total": dismissed_total or 0,
         "high_total": rows["high_total"] or 0,
         "avg_score": avg_score,
         "severity": {
@@ -566,6 +601,27 @@ def call_ai(prompt):
 def _parse_db_datetime(value):
     if not value:
         return None
+    # MySQL (pymysql) may return datetime objects already
+    if isinstance(value, datetime):
+        return value
+    # Some drivers may return date objects
+    if hasattr(value, "year") and hasattr(value, "month") and hasattr(value, "day"):
+        try:
+            return datetime(
+                value.year,
+                value.month,
+                value.day,
+                getattr(value, "hour", 0),
+                getattr(value, "minute", 0),
+                getattr(value, "second", 0),
+            )
+        except Exception:
+            return None
+    if isinstance(value, bytes):
+        try:
+            value = value.decode("utf-8")
+        except Exception:
+            return None
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
         try:
             return datetime.strptime(value, fmt)

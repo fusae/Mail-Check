@@ -31,6 +31,8 @@ class MailCheckReportGenerator:
         Args:
             db_path: SQLite数据库路径，默认从config.yaml读取
         """
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        self.project_root = os.path.dirname(current_dir)
         self.db_path = self._normalize_db_path(db_path or self._get_default_db_path())
         self.conn = None
 
@@ -69,7 +71,7 @@ class MailCheckReportGenerator:
     def connect(self):
         """连接数据库"""
         if not self.conn:
-            self.conn = db.connect(os.path.dirname(os.path.abspath(__file__)))
+            self.conn = db.connect(self.project_root)
         return self.conn
 
     def close(self):
