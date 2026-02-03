@@ -8,7 +8,7 @@ AI舆情分析模块
 import json
 import logging
 import re
-import sqlite3
+import db
 
 import requests
 import yaml
@@ -350,18 +350,21 @@ OCR文本（ocrData）: {ocr_content} {ocr_note}
             return None
 
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            cursor.execute('''
+            row = db.execute(
+                os.path.dirname(os.path.abspath(__file__)),
+                '''
                 SELECT feedback_judgment FROM sentiment_feedback
                 WHERE sentiment_id = ?
                 ORDER BY created_at DESC
                 LIMIT 1
-            ''', (sentiment_id,))
-            row = cursor.fetchone()
-            conn.close()
+                ''',
+                (sentiment_id,),
+                fetchone=True
+            )
             if row is None:
                 return None
+            if isinstance(row, dict):
+                return bool(row.get('feedback_judgment'))
             return bool(row[0])
         except Exception as e:
             self.logger.error(f"读取反馈失败: {e}")
@@ -373,23 +376,24 @@ OCR文本（ocrData）: {ocr_content} {ocr_note}
 
         min_conf = self.feedback_config.get('rules_min_confidence', 0.7)
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            cursor.execute('''
+            rows = db.execute(
+                os.path.dirname(os.path.abspath(__file__)),
+                '''
                 SELECT pattern, rule_type, action, confidence
                 FROM feedback_rules
                 WHERE enabled = 1 AND confidence >= ?
                 ORDER BY confidence DESC, created_at DESC
                 LIMIT 50
-            ''', (min_conf,))
-            rows = cursor.fetchall()
-            conn.close()
+                ''',
+                (min_conf,),
+                fetchall=True
+            )
             return [
                 {
-                    'pattern': row[0],
-                    'rule_type': row[1],
-                    'action': row[2],
-                    'confidence': row[3]
+                    'pattern': row['pattern'] if isinstance(row, dict) else row[0],
+                    'rule_type': row['rule_type'] if isinstance(row, dict) else row[1],
+                    'action': row['action'] if isinstance(row, dict) else row[2],
+                    'confidence': row['confidence'] if isinstance(row, dict) else row[3],
                 }
                 for row in rows
             ]
@@ -431,9 +435,9 @@ OCR文本（ocrData）: {ocr_content} {ocr_note}
 
         limit = self.feedback_config.get('max_few_shot', 5)
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            cursor.execute('''
+            rows = db.execute(
+                os.path.dirname(os.path.abspath(__file__)),
+                '''
                 SELECT f.sentiment_id, f.feedback_judgment, f.feedback_text,
                        n.title, n.hospital_name, n.source, n.content
                 FROM sentiment_feedback f
@@ -441,16 +445,26 @@ OCR文本（ocrData）: {ocr_content} {ocr_note}
                 ON f.sentiment_id = n.sentiment_id
                 ORDER BY f.created_at DESC
                 LIMIT ?
-            ''', (limit,))
-            rows = cursor.fetchall()
-            conn.close()
+                ''',
+                (limit,),
+                fetchall=True
+            )
 
             if not rows:
                 return ''
 
             lines = ["\n用户反馈示例（供判断参考）："]
             for idx, row in enumerate(rows, 1):
-                sentiment_id, judgment, feedback_text, title, hospital, source, content = row
+                if isinstance(row, dict):
+                    sentiment_id = row.get('sentiment_id')
+                    judgment = row.get('feedback_judgment')
+                    feedback_text = row.get('feedback_text')
+                    title = row.get('title')
+                    hospital = row.get('hospital_name')
+                    source = row.get('source')
+                    content = row.get('content')
+                else:
+                    sentiment_id, judgment, feedback_text, title, hospital, source, content = row
                 label = '负面' if judgment else '非负面'
                 snippet = (content or '')[:200]
                 lines.append(

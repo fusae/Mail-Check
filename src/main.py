@@ -10,7 +10,7 @@ import time
 import yaml
 import logging
 from datetime import datetime
-import sqlite3
+import db
 
 # 添加src目录到路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -38,8 +38,8 @@ class SentimentMonitor:
         self.notifier = Notifier(self.config)
         
         # 初始化数据库
-        self.db_path = self.config['runtime']['database_path']
-        self.init_database()
+        self.db_path = self.config['runtime'].get('database_path')
+        db.ensure_schema(os.path.dirname(os.path.abspath(__file__)))
         
         self.check_interval = self.config['runtime']['check_interval']
         self.logger.info("=" * 50)
@@ -67,158 +67,55 @@ class SentimentMonitor:
         
         self.logger = logging.getLogger(__name__)
     
-    def init_database(self):
-        """初始化数据库"""
-        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-        
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS processed_emails (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                token TEXT UNIQUE,
-                hospital_name TEXT,
-                email_date TEXT,
-                processed_at TEXT DEFAULT (datetime('now','localtime'))
-            )
-        ''')
-        
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS negative_sentiments (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                sentiment_id TEXT,
-                hospital_name TEXT,
-                title TEXT,
-                source TEXT,
-                content TEXT,
-                reason TEXT,
-                severity TEXT,
-                url TEXT,
-                status TEXT DEFAULT 'active',
-                dismissed_at TEXT,
-                processed_at TEXT DEFAULT (datetime('now','localtime'))
-            )
-        ''')
-        
-        # 添加 url 字段（如果表已存在）
-        cursor.execute("PRAGMA table_info(negative_sentiments)")
-        columns = [row[1] for row in cursor.fetchall()]
-        if 'url' not in columns:
-            cursor.execute('ALTER TABLE negative_sentiments ADD COLUMN url TEXT')
-            self.logger.info("数据库表结构已升级：添加 url 字段")
-
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS sentiment_feedback (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                sentiment_id TEXT,
-                feedback_judgment BOOLEAN,
-                feedback_type TEXT,
-                feedback_text TEXT,
-                user_id TEXT,
-                feedback_time TEXT,
-                created_at TEXT DEFAULT (datetime('now','localtime'))
-            )
-        ''')
-
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS feedback_queue (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                sentiment_id TEXT,
-                user_id TEXT,
-                sent_time TEXT,
-                status TEXT DEFAULT 'pending',
-                created_at TEXT DEFAULT (datetime('now','localtime'))
-            )
-        ''')
-        cursor.execute('''
-            CREATE INDEX IF NOT EXISTS idx_feedback_queue_user_status
-            ON feedback_queue (user_id, status, sent_time)
-        ''')
-
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS feedback_rules (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                pattern TEXT,
-                rule_type TEXT,
-                action TEXT,
-                confidence REAL,
-                enabled INTEGER DEFAULT 1,
-                source_feedback_id INTEGER,
-                created_at TEXT DEFAULT (datetime('now','localtime'))
-            )
-        ''')
-
-        self._ensure_column(cursor, 'negative_sentiments', 'content', 'TEXT')
-        self._ensure_column(cursor, 'negative_sentiments', 'status', 'TEXT')
-        self._ensure_column(cursor, 'negative_sentiments', 'dismissed_at', 'TEXT')
-        
-        conn.commit()
-        conn.close()
-        
-        self.logger.info("数据库初始化完成")
-
-    def _ensure_column(self, cursor, table_name, column_name, column_def):
-        cursor.execute(f"PRAGMA table_info({table_name})")
-        columns = {row[1] for row in cursor.fetchall()}
-        if column_name not in columns:
-            cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_def}")
-
     def _now_local_str(self):
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     def is_email_processed(self, token):
         """检查邮件是否已处理"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('SELECT id FROM processed_emails WHERE token = ?', (token,))
-        result = cursor.fetchone()
-        
-        conn.close()
-        
-        return result is not None
+        row = db.execute(
+            os.path.dirname(os.path.abspath(__file__)),
+            'SELECT id FROM processed_emails WHERE token = ?',
+            (token,),
+            fetchone=True
+        )
+        return row is not None
     
     def mark_email_processed(self, token, hospital_name, email_date):
         """标记邮件已处理"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
         try:
-            cursor.execute('''
+            db.execute(
+                os.path.dirname(os.path.abspath(__file__)),
+                '''
                 INSERT INTO processed_emails (token, hospital_name, email_date, processed_at)
                 VALUES (?, ?, ?, ?)
-            ''', (token, hospital_name, email_date, self._now_local_str()))
-            conn.commit()
+                ''',
+                (token, hospital_name, email_date, self._now_local_str()),
+            )
             self.logger.info(f"邮件已标记处理: {token[:20]}...")
-        except sqlite3.IntegrityError:
+        except Exception:
             self.logger.warning(f"邮件已存在: {token[:20]}...")
-        
-        conn.close()
     
     def save_negative_sentiment(self, sentiment, hospital_name, analysis):
         """保存负面舆情"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
+        db.execute(
+            os.path.dirname(os.path.abspath(__file__)),
+            '''
             INSERT INTO negative_sentiments 
             (sentiment_id, hospital_name, title, source, content, reason, severity, url, processed_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            sentiment.get('id', ''),
-            hospital_name,
-            sentiment.get('title', ''),
-            sentiment.get('webName', ''),
-            sentiment.get('ocrData') or sentiment.get('allContent', ''),
-            analysis['reason'],
-            analysis['severity'],
-            sentiment.get('url', ''),
-            self._now_local_str()
-        ))
-        
-        conn.commit()
-        conn.close()
+            ''',
+            (
+                sentiment.get('id', ''),
+                hospital_name,
+                sentiment.get('title', ''),
+                sentiment.get('webName', ''),
+                sentiment.get('ocrData') or sentiment.get('allContent', ''),
+                analysis['reason'],
+                analysis['severity'],
+                sentiment.get('url', ''),
+                self._now_local_str()
+            )
+        )
         
         self.logger.info(f"负面舆情已保存到数据库")
 
@@ -233,17 +130,15 @@ class SentimentMonitor:
             recipients = [recipients]
 
         sent_time = self._now_local_str()
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-
         for user_id in recipients:
-            cursor.execute('''
+            db.execute(
+                os.path.dirname(os.path.abspath(__file__)),
+                '''
                 INSERT INTO feedback_queue (sentiment_id, user_id, sent_time, created_at)
                 VALUES (?, ?, ?, ?)
-            ''', (sentiment_id, user_id, sent_time, sent_time))
-
-        conn.commit()
-        conn.close()
+                ''',
+                (sentiment_id, user_id, sent_time, sent_time)
+            )
 
         self.logger.info("反馈队列已记录")
     

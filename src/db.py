@@ -1,0 +1,332 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+数据库连接与初始化（支持 SQLite / MySQL）
+"""
+
+from __future__ import annotations
+
+import os
+import sqlite3
+from typing import Any, Dict, Iterable, Tuple
+
+import yaml
+
+try:
+    import pymysql
+    from pymysql.cursors import DictCursor
+    MYSQL_AVAILABLE = True
+except Exception:
+    MYSQL_AVAILABLE = False
+
+
+def load_config(project_root: str) -> Dict[str, Any]:
+    config_path = os.path.join(project_root, "config", "config.yaml")
+    with open(config_path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+
+def get_db_engine(config: Dict[str, Any]) -> str:
+    return (config.get("runtime", {}).get("database_engine") or "sqlite").lower()
+
+
+def get_sqlite_path(config: Dict[str, Any], project_root: str) -> str:
+    db_path = config.get("runtime", {}).get(
+        "database_path",
+        os.path.join(project_root, "data", "processed_emails.db"),
+    )
+    if not os.path.isabs(db_path):
+        db_path = os.path.join(project_root, db_path)
+    return db_path
+
+
+def get_mysql_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    mysql = config.get("runtime", {}).get("mysql", {}) or {}
+    return {
+        "host": mysql.get("host", "127.0.0.1"),
+        "port": int(mysql.get("port", 3306)),
+        "user": mysql.get("user", "root"),
+        "password": mysql.get("password", ""),
+        "database": mysql.get("database", "mail_check"),
+        "charset": mysql.get("charset", "utf8mb4"),
+    }
+
+
+def _adapt_sql(sql: str, engine: str) -> str:
+    if engine == "mysql":
+        return sql.replace("?", "%s")
+    return sql
+
+
+class _MysqlCompatCursor:
+    def __init__(self, cursor, engine: str):
+        self._cursor = cursor
+        self._engine = engine
+
+    def execute(self, sql: str, params: Iterable[Any] = ()):
+        return self._cursor.execute(_adapt_sql(sql, self._engine), params or ())
+
+    def executemany(self, sql: str, params: Iterable[Tuple[Any, ...]]):
+        return self._cursor.executemany(_adapt_sql(sql, self._engine), params)
+
+    def fetchone(self):
+        return self._cursor.fetchone()
+
+    def fetchall(self):
+        return self._cursor.fetchall()
+
+    @property
+    def lastrowid(self):
+        return getattr(self._cursor, "lastrowid", None)
+
+
+class _MysqlCompatConnection:
+    def __init__(self, conn, engine: str):
+        self._conn = conn
+        self._engine = engine
+
+    def cursor(self):
+        return _MysqlCompatCursor(self._conn.cursor(), self._engine)
+
+    def commit(self):
+        return self._conn.commit()
+
+    def close(self):
+        return self._conn.close()
+
+
+def connect(project_root: str):
+    config = load_config(project_root)
+    engine = get_db_engine(config)
+    if engine == "mysql":
+        if not MYSQL_AVAILABLE:
+            raise RuntimeError("未安装pymysql，请先安装后再使用MySQL。")
+        mysql_cfg = get_mysql_config(config)
+        conn = pymysql.connect(
+            host=mysql_cfg["host"],
+            port=mysql_cfg["port"],
+            user=mysql_cfg["user"],
+            password=mysql_cfg["password"],
+            database=mysql_cfg["database"],
+            charset=mysql_cfg["charset"],
+            cursorclass=DictCursor,
+            autocommit=True,
+        )
+        return _MysqlCompatConnection(conn, engine)
+    db_path = get_sqlite_path(config, project_root)
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def execute(project_root: str, sql: str, params: Iterable[Any] = (), fetchone: bool = False, fetchall: bool = False):
+    config = load_config(project_root)
+    engine = get_db_engine(config)
+    conn = connect(project_root)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(_adapt_sql(sql, engine), params)
+        if fetchone:
+            return cursor.fetchone()
+        if fetchall:
+            return cursor.fetchall()
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def ensure_mysql_database(config: Dict[str, Any]):
+    if not MYSQL_AVAILABLE:
+        raise RuntimeError("未安装pymysql，请先安装后再使用MySQL。")
+    mysql_cfg = get_mysql_config(config)
+    conn = pymysql.connect(
+        host=mysql_cfg["host"],
+        port=mysql_cfg["port"],
+        user=mysql_cfg["user"],
+        password=mysql_cfg["password"],
+        charset=mysql_cfg["charset"],
+        autocommit=True,
+    )
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"CREATE DATABASE IF NOT EXISTS `{mysql_cfg['database']}` DEFAULT CHARACTER SET utf8mb4"
+            )
+    finally:
+        conn.close()
+
+
+def ensure_schema(project_root: str):
+    config = load_config(project_root)
+    engine = get_db_engine(config)
+    if engine == "mysql":
+        ensure_mysql_database(config)
+        _ensure_mysql_tables(project_root, config)
+    else:
+        _ensure_sqlite_tables(project_root, config)
+
+
+def _ensure_sqlite_tables(project_root: str, config: Dict[str, Any]):
+    db_path = get_sqlite_path(config, project_root)
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS processed_emails (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            token TEXT UNIQUE,
+            hospital_name TEXT,
+            email_date TEXT,
+            processed_at TEXT DEFAULT (datetime('now','localtime'))
+        )
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS negative_sentiments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sentiment_id TEXT,
+            hospital_name TEXT,
+            title TEXT,
+            source TEXT,
+            content TEXT,
+            reason TEXT,
+            severity TEXT,
+            url TEXT,
+            status TEXT DEFAULT 'active',
+            dismissed_at TEXT,
+            insight_text TEXT,
+            insight_at TEXT,
+            processed_at TEXT DEFAULT (datetime('now','localtime'))
+        )
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS sentiment_feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sentiment_id TEXT,
+            feedback_judgment BOOLEAN,
+            feedback_type TEXT,
+            feedback_text TEXT,
+            user_id TEXT,
+            feedback_time TEXT,
+            created_at TEXT DEFAULT (datetime('now','localtime'))
+        )
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS feedback_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sentiment_id TEXT,
+            user_id TEXT,
+            sent_time TEXT,
+            status TEXT DEFAULT 'pending',
+            created_at TEXT DEFAULT (datetime('now','localtime'))
+        )
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS feedback_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pattern TEXT,
+            rule_type TEXT,
+            action TEXT,
+            confidence REAL,
+            enabled INTEGER DEFAULT 1,
+            source_feedback_id INTEGER,
+            created_at TEXT DEFAULT (datetime('now','localtime'))
+        )
+    ''')
+
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_negative_sentiments_processed_at ON negative_sentiments(processed_at)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_negative_sentiments_status ON negative_sentiments(status)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_negative_sentiments_hospital ON negative_sentiments(hospital_name)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_negative_sentiments_sentiment_id ON negative_sentiments(sentiment_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_feedback_queue_user_status ON feedback_queue(user_id, status, sent_time)')
+
+    conn.commit()
+    conn.close()
+
+
+def _ensure_mysql_tables(project_root: str, config: Dict[str, Any]):
+    conn = connect(project_root)
+    cursor = conn.cursor()
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS processed_emails (
+            id BIGINT PRIMARY KEY AUTO_INCREMENT,
+            token VARCHAR(255) UNIQUE,
+            hospital_name VARCHAR(255),
+            email_date VARCHAR(255),
+            processed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS negative_sentiments (
+            id BIGINT PRIMARY KEY AUTO_INCREMENT,
+            sentiment_id VARCHAR(255),
+            hospital_name VARCHAR(255),
+            title TEXT,
+            source VARCHAR(255),
+            content LONGTEXT,
+            reason TEXT,
+            severity VARCHAR(20),
+            url TEXT,
+            status VARCHAR(20) DEFAULT 'active',
+            dismissed_at DATETIME,
+            insight_text LONGTEXT,
+            insight_at DATETIME,
+            processed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS sentiment_feedback (
+            id BIGINT PRIMARY KEY AUTO_INCREMENT,
+            sentiment_id VARCHAR(255),
+            feedback_judgment TINYINT(1),
+            feedback_type VARCHAR(50),
+            feedback_text TEXT,
+            user_id VARCHAR(255),
+            feedback_time DATETIME,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS feedback_queue (
+            id BIGINT PRIMARY KEY AUTO_INCREMENT,
+            sentiment_id VARCHAR(255),
+            user_id VARCHAR(255),
+            sent_time DATETIME,
+            status VARCHAR(20) DEFAULT 'pending',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS feedback_rules (
+            id BIGINT PRIMARY KEY AUTO_INCREMENT,
+            pattern TEXT,
+            rule_type VARCHAR(20),
+            action VARCHAR(20),
+            confidence DOUBLE,
+            enabled TINYINT(1) DEFAULT 1,
+            source_feedback_id BIGINT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    ''')
+
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_negative_sentiments_processed_at ON negative_sentiments(processed_at)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_negative_sentiments_status ON negative_sentiments(status)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_negative_sentiments_hospital ON negative_sentiments(hospital_name)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_negative_sentiments_sentiment_id ON negative_sentiments(sentiment_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_feedback_queue_user_status ON feedback_queue(user_id, status, sent_time)')
+
+    conn.commit()
+    conn.close()

@@ -10,7 +10,7 @@ import hmac
 import logging
 import os
 import re
-import sqlite3
+import db
 from collections import defaultdict
 from datetime import datetime, timedelta
 
@@ -51,96 +51,19 @@ def _write_config_file(cfg):
 
 
 config = load_config()
-DB_PATH = config.get('runtime', {}).get(
-    'database_path',
-    os.path.join(project_root, 'data', 'processed_emails.db')
-)
-if not os.path.isabs(DB_PATH):
-    DB_PATH = os.path.join(project_root, DB_PATH)
-
 ai_config = config.get('ai', {})
 feedback_config = config.get('feedback', {})
-
-
-def _ensure_column(cursor, table_name, column_name, column_def):
-    cursor.execute(f"PRAGMA table_info({table_name})")
-    columns = {row[1] for row in cursor.fetchall()}
-    if column_name not in columns:
-        cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_def}")
+REPORTS_DIR = os.path.join(project_root, 'data', 'reports')
 
 
 def init_database():
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS negative_sentiments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            sentiment_id TEXT,
-            hospital_name TEXT,
-            title TEXT,
-            source TEXT,
-            content TEXT,
-            reason TEXT,
-            severity TEXT,
-            url TEXT,
-            status TEXT DEFAULT 'active',
-            dismissed_at TEXT,
-            processed_at TEXT DEFAULT (datetime('now','localtime'))
-        )
-    ''')
-
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS sentiment_feedback (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            sentiment_id TEXT,
-            feedback_judgment BOOLEAN,
-            feedback_type TEXT,
-            feedback_text TEXT,
-            user_id TEXT,
-            feedback_time TEXT,
-            created_at TEXT DEFAULT (datetime('now','localtime'))
-        )
-    ''')
-
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS feedback_rules (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            pattern TEXT,
-            rule_type TEXT,
-            action TEXT,
-            confidence REAL,
-            enabled INTEGER DEFAULT 1,
-            source_feedback_id INTEGER,
-            created_at TEXT DEFAULT (datetime('now','localtime'))
-        )
-    ''')
-
-    _ensure_column(cursor, 'negative_sentiments', 'content', 'TEXT')
-    _ensure_column(cursor, 'negative_sentiments', 'url', 'TEXT')
-    _ensure_column(cursor, 'negative_sentiments', 'status', 'TEXT')
-    _ensure_column(cursor, 'negative_sentiments', 'dismissed_at', 'TEXT')
-    _ensure_column(cursor, 'negative_sentiments', 'insight_text', 'TEXT')
-    _ensure_column(cursor, 'negative_sentiments', 'insight_at', 'TEXT')
-
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_negative_sentiments_processed_at ON negative_sentiments(processed_at)')
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_negative_sentiments_status ON negative_sentiments(status)')
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_negative_sentiments_hospital ON negative_sentiments(hospital_name)')
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_negative_sentiments_sentiment_id ON negative_sentiments(sentiment_id)')
-
-    conn.commit()
-    conn.close()
+    db.ensure_schema(project_root)
 
 
 def query_db(sql, params=(), fetchone=False):
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    cursor.execute(sql, params)
-    rows = cursor.fetchone() if fetchone else cursor.fetchall()
-    conn.close()
-    return rows
+    if fetchone:
+        return db.execute(project_root, sql, params, fetchone=True)
+    return db.execute(project_root, sql, params, fetchall=True)
 
 
 def _now_local_str():
@@ -173,29 +96,40 @@ def row_to_opinion(row, include_content=True, preview_len=240):
 
 
 def get_sentiment_info(sentiment_id):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute('''
+    result = query_db(
+        '''
         SELECT hospital_name, title, source, content, reason, severity, url, status, dismissed_at
         FROM negative_sentiments
         WHERE sentiment_id = ?
-    ''', (sentiment_id,))
-    result = cursor.fetchone()
-    conn.close()
-
-    if result:
+        ''',
+        (sentiment_id,),
+        fetchone=True
+    )
+    if not result:
+        return None
+    if isinstance(result, dict):
         return {
-            'hospital_name': result[0],
-            'title': result[1],
-            'source': result[2],
-            'content': result[3],
-            'reason': result[4],
-            'severity': result[5],
-            'url': result[6] if len(result) > 6 else '',
-            'status': result[7] if len(result) > 7 else 'active',
-            'dismissed_at': result[8] if len(result) > 8 else None
+            'hospital_name': result.get('hospital_name'),
+            'title': result.get('title'),
+            'source': result.get('source'),
+            'content': result.get('content'),
+            'reason': result.get('reason'),
+            'severity': result.get('severity'),
+            'url': result.get('url', ''),
+            'status': result.get('status', 'active'),
+            'dismissed_at': result.get('dismissed_at')
         }
-    return None
+    return {
+        'hospital_name': result[0],
+        'title': result[1],
+        'source': result[2],
+        'content': result[3],
+        'reason': result[4],
+        'severity': result[5],
+        'url': result[6] if len(result) > 6 else '',
+        'status': result[7] if len(result) > 7 else 'active',
+        'dismissed_at': result[8] if len(result) > 8 else None
+    }
 
 
 def verify_signature(sentiment_id, sig):
@@ -211,7 +145,7 @@ def verify_signature(sentiment_id, sig):
 
 
 def save_feedback(data):
-    conn = sqlite3.connect(DB_PATH)
+    conn = db.connect(project_root)
     cursor = conn.cursor()
     cursor.execute('''
         INSERT INTO sentiment_feedback (
@@ -234,7 +168,7 @@ def save_feedback(data):
 
 
 def delete_negative_sentiment(sentiment_id):
-    conn = sqlite3.connect(DB_PATH)
+    conn = db.connect(project_root)
     cursor = conn.cursor()
     cursor.execute('''
         UPDATE negative_sentiments
@@ -246,7 +180,7 @@ def delete_negative_sentiment(sentiment_id):
 
 
 def restore_negative_sentiment(sentiment_id):
-    conn = sqlite3.connect(DB_PATH)
+    conn = db.connect(project_root)
     cursor = conn.cursor()
     cursor.execute('''
         UPDATE negative_sentiments
@@ -258,7 +192,7 @@ def restore_negative_sentiment(sentiment_id):
 
 
 def get_feedback_list(sentiment_id):
-    conn = sqlite3.connect(DB_PATH)
+    conn = db.connect(project_root)
     cursor = conn.cursor()
     cursor.execute('''
         SELECT feedback_time, feedback_type, feedback_text, user_id
@@ -271,10 +205,10 @@ def get_feedback_list(sentiment_id):
     conn.close()
     return [
         {
-            'feedback_time': row[0],
-            'feedback_type': row[1],
-            'feedback_text': row[2],
-            'user_id': row[3]
+            'feedback_time': row.get('feedback_time') if isinstance(row, dict) else row[0],
+            'feedback_type': row.get('feedback_type') if isinstance(row, dict) else row[1],
+            'feedback_text': row.get('feedback_text') if isinstance(row, dict) else row[2],
+            'user_id': row.get('user_id') if isinstance(row, dict) else row[3]
         }
         for row in rows
     ]
@@ -315,7 +249,7 @@ def save_feedback_rules(feedback_id, rules, action):
     if not rules:
         return
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = db.connect(project_root)
     cursor = conn.cursor()
     for rule in rules:
         cursor.execute('''
@@ -713,7 +647,7 @@ def ai_insight():
     text = call_ai(prompt)
     generated_at = _now_local_str()
     if sentiment_id:
-        conn = sqlite3.connect(DB_PATH)
+        conn = db.connect(project_root)
         cursor = conn.cursor()
         cursor.execute(
             "UPDATE negative_sentiments SET insight_text = ?, insight_at = ? WHERE sentiment_id = ?",
@@ -765,7 +699,7 @@ def api_generate_report():
 
         from report_generator_mailcheck import MailCheckReportGenerator
 
-        generator = MailCheckReportGenerator(db_path=DB_PATH)
+        generator = MailCheckReportGenerator()
         result = generator.generate_report(
             start_date=data.get('start_date'),
             end_date=data.get('end_date'),
@@ -805,8 +739,7 @@ def api_download_report(filename):
         if not filename or '..' in filename or '/' in filename:
             return jsonify({'success': False, 'message': '无效的文件名'}), 400
 
-        reports_dir = os.path.join(os.path.dirname(DB_PATH), 'reports')
-        file_path = os.path.join(reports_dir, filename)
+        file_path = os.path.join(REPORTS_DIR, filename)
 
         if not os.path.exists(file_path):
             return jsonify({'success': False, 'message': '文件不存在'}), 404
@@ -822,14 +755,12 @@ def api_download_report(filename):
 def api_list_reports():
     """列出已生成的报告（新报告生成器）"""
     try:
-        reports_dir = os.path.join(os.path.dirname(DB_PATH), 'reports')
-
-        if not os.path.exists(reports_dir):
+        if not os.path.exists(REPORTS_DIR):
             return jsonify({'success': True, 'reports': []})
 
         reports = []
-        for filename in os.listdir(reports_dir):
-            file_path = os.path.join(reports_dir, filename)
+        for filename in os.listdir(REPORTS_DIR):
+            file_path = os.path.join(REPORTS_DIR, filename)
             if os.path.isfile(file_path):
                 stat = os.stat(file_path)
                 file_ext = os.path.splitext(filename)[1].lower()

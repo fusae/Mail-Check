@@ -5,7 +5,7 @@
 从SQLite数据库读取舆情数据，自动生成详细分析报告
 """
 
-import sqlite3
+import db
 import pandas as pd
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -69,8 +69,7 @@ class MailCheckReportGenerator:
     def connect(self):
         """连接数据库"""
         if not self.conn:
-            self.conn = sqlite3.connect(self.db_path)
-            self.conn.row_factory = sqlite3.Row
+            self.conn = db.connect(os.path.dirname(os.path.abspath(__file__)))
         return self.conn
 
     def close(self):
