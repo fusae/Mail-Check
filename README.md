@@ -93,7 +93,7 @@ ai:
 
 # 反馈链接配置（用于误报反馈）
 feedback:
-  link_base_url: "http://your-server:5003/feedback"
+  link_base_url: "http://<服务器地址>:<API端口>/feedback"
   link_secret: "CHANGE_THIS_TO_RANDOM_SECRET"
 
 # 医院负责人@配置（见 config/hospital_contacts.yaml）

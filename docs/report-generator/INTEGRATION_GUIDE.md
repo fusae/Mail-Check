@@ -154,7 +154,7 @@ python src/report_generator_mailcheck.py --help
 python src/api_server.py
 
 # 调用API生成报告
-curl -X POST "http://localhost:5003/api/report/generate" \
+curl -X POST "http://<服务器地址>:<API端口>/api/report/generate" \
   -H "Content-Type: application/json" \
   -d '{
     "start_date": "2026-01-01",
@@ -178,10 +178,10 @@ curl -X POST "http://localhost:5003/api/report/generate" \
 }
 
 # 下载报告
-curl "http://localhost:5003/api/report/download/XX医院_舆情报告_20260131_120000.md" -o report.md
+curl "http://<服务器地址>:<API端口>/api/report/download/XX医院_舆情报告_20260131_120000.md" -o report.md
 
 # 查看已生成的报告列表
-curl "http://localhost:5003/api/report/list"
+curl "http://<服务器地址>:<API端口>/api/report/list"
 ```
 
 ---
@@ -245,7 +245,7 @@ hospitals = ["XX市第一人民医院", "XX市第二人民医院"]
 
 for hospital in hospitals:
     response = requests.post(
-        "http://localhost:5003/api/report/generate",
+        "http://<服务器地址>:<API端口>/api/report/generate",
         json={
             "hospital": hospital,
             "format": "word"
@@ -269,7 +269,7 @@ ls -lh data/reports/
 # 测试API
 python src/api_server.py
 # 然后在另一个终端：
-curl -X POST "http://localhost:5003/api/report/generate" -H "Content-Type: application/json" -d '{}'
+curl -X POST "http://<服务器地址>:<API端口>/api/report/generate" -H "Content-Type: application/json" -d '{}'
 ```
 
 ---

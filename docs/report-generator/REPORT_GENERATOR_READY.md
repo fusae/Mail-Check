@@ -140,7 +140,7 @@ python src/api_server.py
 python src/report_generator_mailcheck.py
 
 # 方式2：API调用
-curl -X POST "http://localhost:5003/api/report/generate" \
+curl -X POST "http://<服务器地址>:<API端口>/api/report/generate" \
   -H "Content-Type: application/json" \
   -d '{}'
 ```
@@ -172,7 +172,7 @@ python src/report_generator_mailcheck.py --format word
 
 ```bash
 # 生成报告
-curl -X POST "http://localhost:5003/api/report/generate" \
+curl -X POST "http://<服务器地址>:<API端口>/api/report/generate" \
   -H "Content-Type: application/json" \
   -d '{
     "start_date": "2026-01-01",
@@ -182,10 +182,10 @@ curl -X POST "http://localhost:5003/api/report/generate" \
   }'
 
 # 查看报告列表
-curl "http://localhost:5003/api/report/list"
+curl "http://<服务器地址>:<API端口>/api/report/list"
 
 # 下载报告
-curl "http://localhost:5003/api/report/download/XX医院_舆情报告_20260131.md" -o report.md
+curl "http://<服务器地址>:<API端口>/api/report/download/XX医院_舆情报告_20260131.md" -o report.md
 ```
 
 ---

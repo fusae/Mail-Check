@@ -171,7 +171,7 @@ class Notifier:
                 url = sentiment_info.get('url', '')
                 sentiment_id = sentiment_info.get('id') or sentiment_info.get('sentiment_id')
 
-                if url and source == '抖音' and sentiment_id:
+                if url and source in ('抖音', '小红书') and sentiment_id:
                     detail_url = f"https://console.microvivid.com/h5ListDetail?id={sentiment_id}"
                     url_line = f"**舆情链接：** [查看详情]({detail_url})"
                 elif url:
@@ -200,7 +200,7 @@ class Notifier:
                 url = sentiment_info.get('url', '')
                 sentiment_id = sentiment_info.get('id') or sentiment_info.get('sentiment_id')
 
-                if url and source == '抖音' and sentiment_id:
+                if url and source in ('抖音', '小红书') and sentiment_id:
                     detail_url = f"https://console.microvivid.com/h5ListDetail?id={sentiment_id}"
                     url_html = f'<a href="{detail_url}">查看详情</a>'
                     link_label = "舆情链接"
@@ -479,13 +479,13 @@ AI判断: {reason}
             # 原文链接和反馈链接单独构建，避免在 f-string 表达式里使用转义字符（会导致 SyntaxError）
             # 抖音链接使用详情页跳转，其他来源使用原始链接
             if url:
-                if source == '抖音' and sentiment_id:
+                if source in ('抖音', '小红书') and sentiment_id:
                     detail_url = f"https://console.microvivid.com/h5ListDetail?id={sentiment_id}"
                     orig_link_line = f"**舆情链接：** [查看详情]({detail_url})\n"
-                    self.logger.info(f"抖音舆情，使用详情页链接: {detail_url}")
+                    self.logger.info(f"{source}舆情，使用详情页链接: {detail_url}")
                 else:
                     orig_link_line = f"**原文链接：** [{url}]({url})\n"
-                    self.logger.info(f"非抖音舆情，使用原始链接: {url}")
+                    self.logger.info(f"非抖音/小红书舆情，使用原始链接: {url}")
             else:
                 orig_link_line = ""
                 self.logger.warning("未获取到URL")

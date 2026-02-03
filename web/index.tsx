@@ -47,6 +47,9 @@ interface OpinionItem {
   createdAt: string;
 }
 
+const API_BASE = "http://192.168.188.6:10087";
+const apiFetch = (path: string, options?: RequestInit) => fetch(`${API_BASE}${path}`, options);
+
 const severityMeta = {
   high: {
     label: "高危",
@@ -219,7 +222,7 @@ const OpinionDashboard = () => {
     setIsLoading(true);
     setError(null);
     try {
-      const response = await fetch("/api/opinions?status=all&compact=1&preview=240");
+      const response = await apiFetch("/api/opinions?status=all&compact=1&preview=240");
       if (!response.ok) throw new Error("无法连接到后端接口");
       const data = await response.json();
       setOpinions(data);
@@ -240,7 +243,7 @@ const OpinionDashboard = () => {
 
   const fetchStats = async () => {
     try {
-      const resp = await fetch(`/api/stats?range=${timeRange}`);
+      const resp = await apiFetch(`/api/stats?range=${timeRange}`);
       if (!resp.ok) return;
       const data = await resp.json();
       setStatsOverride({
@@ -268,7 +271,7 @@ const OpinionDashboard = () => {
 
   const fetchTrend = async () => {
     try {
-      const resp = await fetch(`/api/stats/trend?range=${timeRange}`);
+      const resp = await apiFetch(`/api/stats/trend?range=${timeRange}`);
       if (!resp.ok) return;
       const data = await resp.json();
       if (Array.isArray(data.data)) {
@@ -282,7 +285,7 @@ const OpinionDashboard = () => {
   const requestGlobalSummary = async (items: OpinionItem[]) => {
     setAnalyzing(true);
     try {
-      const res = await fetch("/api/ai/summary", {
+      const res = await apiFetch("/api/ai/summary", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ opinions: items }),
@@ -300,7 +303,7 @@ const OpinionDashboard = () => {
   const ensureFullOpinion = async (item: OpinionItem) => {
     if (!item.content_truncated) return item;
     try {
-      const res = await fetch(`/api/opinions/${item.id}`);
+      const res = await apiFetch(`/api/opinions/${item.id}`);
       if (!res.ok) return item;
       const full = await res.json();
       setOpinions((prev) => prev.map((o) => (o.id === item.id ? { ...o, ...full } : o)));
@@ -324,7 +327,7 @@ const OpinionDashboard = () => {
     setInsightText("");
     try {
       const fullItem = await ensureFullOpinion(item);
-      const res = await fetch("/api/ai/insight", {
+      const res = await apiFetch("/api/ai/insight", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ opinion: fullItem }),
@@ -348,7 +351,7 @@ const OpinionDashboard = () => {
     }
     setIsLoading(true);
     try {
-      const res = await fetch(`/api/search?query=${encodeURIComponent(searchTerm)}&compact=1&preview=240`);
+      const res = await apiFetch(`/api/search?query=${encodeURIComponent(searchTerm)}&compact=1&preview=240`);
       const data = await res.json();
       setOpinions(data);
     } catch (err) {
@@ -560,7 +563,7 @@ const OpinionDashboard = () => {
     setSuppressModalOpen(true);
     setSuppressLoading(true);
     try {
-      const resp = await fetch("/api/notification/suppress_keywords");
+      const resp = await apiFetch("/api/notification/suppress_keywords");
       if (resp.ok) {
         const data = await resp.json();
         setSuppressKeywords(Array.isArray(data.keywords) ? data.keywords : []);
@@ -588,7 +591,7 @@ const OpinionDashboard = () => {
   const saveSuppressKeywords = async () => {
     setSuppressSaving(true);
     try {
-      const resp = await fetch("/api/notification/suppress_keywords", {
+      const resp = await apiFetch("/api/notification/suppress_keywords", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ keywords: suppressKeywords }),
@@ -668,7 +671,7 @@ const OpinionDashboard = () => {
 
     setIsGeneratingReport(true);
     try {
-      const response = await fetch("/api/report/generate", {
+      const response = await apiFetch("/api/report/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -699,7 +702,7 @@ const OpinionDashboard = () => {
 
       const downloadUrl = downloadPath.startsWith("http")
         ? downloadPath
-        : downloadPath;
+        : `${API_BASE}${downloadPath}`;
 
       const fileResponse = await fetch(downloadUrl);
       if (!fileResponse.ok) {

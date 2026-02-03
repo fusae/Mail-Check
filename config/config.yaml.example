@@ -60,7 +60,7 @@ feedback:
   enable_few_shot: true
   rules_min_confidence: 0.7
   max_few_shot: 5
-  link_base_url: "http://your-server:5003/feedback"
+  link_base_url: "http://<服务器地址>:<API端口>/feedback"
   link_secret: "CHANGE_THIS_TO_RANDOM_SECRET"
   link_expiry_seconds: 86400
 

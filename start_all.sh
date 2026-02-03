@@ -23,7 +23,7 @@ else
         echo $! > api_server.pid
         sleep 2
         if ps -p $(cat api_server.pid) > /dev/null 2>&1; then
-            echo -e "${GREEN}✓ API服务启动成功 (端口: 5003)${NC}"
+            echo -e "${GREEN}✓ API服务启动成功 (端口: 10087)${NC}"
         else
             echo -e "${YELLOW}✗ API服务启动失败${NC}"
             rm -f api_server.pid

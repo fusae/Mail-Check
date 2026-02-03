@@ -322,11 +322,23 @@ def _ensure_mysql_tables(project_root: str, config: Dict[str, Any]):
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     ''')
 
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_negative_sentiments_processed_at ON negative_sentiments(processed_at)')
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_negative_sentiments_status ON negative_sentiments(status)')
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_negative_sentiments_hospital ON negative_sentiments(hospital_name)')
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_negative_sentiments_sentiment_id ON negative_sentiments(sentiment_id)')
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_feedback_queue_user_status ON feedback_queue(user_id, status, sent_time)')
+    def _mysql_index_exists(table: str, index_name: str) -> bool:
+        cursor.execute(
+            "SHOW INDEX FROM `{}` WHERE Key_name=%s".format(table),
+            (index_name,),
+        )
+        return cursor.fetchone() is not None
+
+    if not _mysql_index_exists("negative_sentiments", "idx_negative_sentiments_processed_at"):
+        cursor.execute('CREATE INDEX idx_negative_sentiments_processed_at ON negative_sentiments(processed_at)')
+    if not _mysql_index_exists("negative_sentiments", "idx_negative_sentiments_status"):
+        cursor.execute('CREATE INDEX idx_negative_sentiments_status ON negative_sentiments(status)')
+    if not _mysql_index_exists("negative_sentiments", "idx_negative_sentiments_hospital"):
+        cursor.execute('CREATE INDEX idx_negative_sentiments_hospital ON negative_sentiments(hospital_name)')
+    if not _mysql_index_exists("negative_sentiments", "idx_negative_sentiments_sentiment_id"):
+        cursor.execute('CREATE INDEX idx_negative_sentiments_sentiment_id ON negative_sentiments(sentiment_id)')
+    if not _mysql_index_exists("feedback_queue", "idx_feedback_queue_user_status"):
+        cursor.execute('CREATE INDEX idx_feedback_queue_user_status ON feedback_queue(user_id, status, sent_time)')
 
     conn.commit()
     conn.close()

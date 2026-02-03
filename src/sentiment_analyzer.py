@@ -7,6 +7,7 @@ AI舆情分析模块
 
 import json
 import logging
+import os
 import re
 import db
 
@@ -26,6 +27,7 @@ class SentimentAnalyzer:
         self.runtime_config = config.get('runtime', {})
         self.feedback_config = config.get('feedback', {})
         self.db_path = self.runtime_config.get('database_path')
+        self.project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         
         self.logger = logging.getLogger(__name__)
     
@@ -351,7 +353,7 @@ OCR文本（ocrData）: {ocr_content} {ocr_note}
 
         try:
             row = db.execute(
-                os.path.dirname(os.path.abspath(__file__)),
+                self.project_root,
                 '''
                 SELECT feedback_judgment FROM sentiment_feedback
                 WHERE sentiment_id = ?
@@ -377,7 +379,7 @@ OCR文本（ocrData）: {ocr_content} {ocr_note}
         min_conf = self.feedback_config.get('rules_min_confidence', 0.7)
         try:
             rows = db.execute(
-                os.path.dirname(os.path.abspath(__file__)),
+                self.project_root,
                 '''
                 SELECT pattern, rule_type, action, confidence
                 FROM feedback_rules
@@ -436,7 +438,7 @@ OCR文本（ocrData）: {ocr_content} {ocr_note}
         limit = self.feedback_config.get('max_few_shot', 5)
         try:
             rows = db.execute(
-                os.path.dirname(os.path.abspath(__file__)),
+                self.project_root,
                 '''
                 SELECT f.sentiment_id, f.feedback_judgment, f.feedback_text,
                        n.title, n.hospital_name, n.source, n.content

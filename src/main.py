@@ -23,6 +23,13 @@ from notifier import Notifier
 
 class SentimentMonitor:
     def __init__(self, config_path='config/config.yaml'):
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.project_root = project_root
+        if not os.path.isabs(config_path):
+            config_path = os.path.join(project_root, config_path)
+        # 确保相对路径以项目根目录为基准
+        os.chdir(project_root)
+
         # 加载配置
         with open(config_path, 'r', encoding='utf-8') as f:
             self.config = yaml.safe_load(f)
@@ -39,7 +46,7 @@ class SentimentMonitor:
         
         # 初始化数据库
         self.db_path = self.config['runtime'].get('database_path')
-        db.ensure_schema(os.path.dirname(os.path.abspath(__file__)))
+        db.ensure_schema(self.project_root)
         
         self.check_interval = self.config['runtime']['check_interval']
         self.logger.info("=" * 50)
@@ -73,7 +80,7 @@ class SentimentMonitor:
     def is_email_processed(self, token):
         """检查邮件是否已处理"""
         row = db.execute(
-            os.path.dirname(os.path.abspath(__file__)),
+            self.project_root,
             'SELECT id FROM processed_emails WHERE token = ?',
             (token,),
             fetchone=True
@@ -84,7 +91,7 @@ class SentimentMonitor:
         """标记邮件已处理"""
         try:
             db.execute(
-                os.path.dirname(os.path.abspath(__file__)),
+                self.project_root,
                 '''
                 INSERT INTO processed_emails (token, hospital_name, email_date, processed_at)
                 VALUES (?, ?, ?, ?)
@@ -98,7 +105,7 @@ class SentimentMonitor:
     def save_negative_sentiment(self, sentiment, hospital_name, analysis):
         """保存负面舆情"""
         db.execute(
-            os.path.dirname(os.path.abspath(__file__)),
+            self.project_root,
             '''
             INSERT INTO negative_sentiments 
             (sentiment_id, hospital_name, title, source, content, reason, severity, url, processed_at)
@@ -132,7 +139,7 @@ class SentimentMonitor:
         sent_time = self._now_local_str()
         for user_id in recipients:
             db.execute(
-                os.path.dirname(os.path.abspath(__file__)),
+                self.project_root,
                 '''
                 INSERT INTO feedback_queue (sentiment_id, user_id, sent_time, created_at)
                 VALUES (?, ?, ?, ?)

@@ -27,11 +27,21 @@ echo ""
 # 2. 检查API服务
 echo -e "${BLUE}【API服务】${NC}"
 API_PID=$(pgrep -f "api_server.py" | head -1)
+API_PORT=$(python3 - <<'PY'
+import yaml, sys
+try:
+    with open("config/config.yaml", "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+    print(cfg.get("api", {}).get("port", 5003))
+except Exception:
+    print(5003)
+PY
+)
 if [ -n "$API_PID" ]; then
     echo -e "  状态: ${GREEN}运行中${NC}"
     echo "  进程ID: $API_PID"
-    echo "  端口: 5003"
-    echo -e "  访问: http://localhost:5003/feedback"
+    echo "  端口: ${API_PORT}"
+    echo -e "  访问: http://localhost:${API_PORT}/feedback"
 else
     echo -e "  状态: ${RED}未运行${NC}"
 fi
