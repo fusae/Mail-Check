@@ -44,8 +44,7 @@ class SentimentMonitor:
         self.sentiment_analyzer = SentimentAnalyzer(self.config)
         self.notifier = Notifier(self.config)
         
-        # 初始化数据库
-        self.db_path = self.config['runtime'].get('database_path')
+        # 初始化数据库（MySQL）
         db.ensure_schema(self.project_root)
         
         self.check_interval = self.config['runtime']['check_interval']

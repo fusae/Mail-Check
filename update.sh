@@ -49,14 +49,7 @@ backup_database() {
     log_info "备份数据库..."
 
     mkdir -p "$BACKUP_DIR"
-    TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-
-    if [ -f "data/processed_emails.db" ]; then
-        cp data/processed_emails.db "$BACKUP_DIR/database_$TIMESTAMP.db"
-        log_success "数据库备份: $BACKUP_DIR/database_$TIMESTAMP.db"
-    else
-        log_warn "数据库文件不存在，跳过备份"
-    fi
+    log_warn "当前使用MySQL，请使用mysqldump进行数据库备份"
 }
 
 # 备份代码

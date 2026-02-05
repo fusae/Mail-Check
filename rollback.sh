@@ -51,11 +51,7 @@ backup_data() {
     mkdir -p "$BACKUP_DIR"
     TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
-    # 备份数据库
-    if [ -f "data/processed_emails.db" ]; then
-        cp data/processed_emails.db "$BACKUP_DIR/database_$TIMESTAMP.db"
-        log_success "数据库备份: $BACKUP_DIR/database_$TIMESTAMP.db"
-    fi
+    log_warn "当前使用MySQL，数据库备份请使用mysqldump"
 
     # 备份配置文件
     if [ -f "config/config.yaml" ]; then
@@ -132,19 +128,7 @@ restore_database() {
     done
     echo ""
 
-    read -p "是否恢复数据库? (y/n): " confirm
-    if [ "$confirm" == "y" ] || [ "$confirm" == "Y" ]; then
-        read -p "选择备份编号 (默认1): " db_index
-        db_index=${db_index:-1}
-
-        SELECTED_DB=$(ls -t "$BACKUP_DIR"/database_*.db | sed -n "${db_index}p")
-        if [ -n "$SELECTED_DB" ]; then
-            cp "$SELECTED_DB" data/processed_emails.db
-            log_success "数据库恢复完成: $(basename $SELECTED_DB)"
-        else
-            log_error "无效的选择"
-        fi
-    fi
+    log_warn "当前使用MySQL，请通过mysqldump备份文件手动恢复数据库"
 }
 
 # 重启服务

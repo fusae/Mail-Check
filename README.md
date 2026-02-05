@@ -32,7 +32,7 @@ Mail_Check/
 ├── web/                    # 前端仪表盘
 ├── logs/                   # 日志目录
 ├── data/                   # 数据目录
-│   └── processed_emails.db # SQLite数据库
+│   └── (MySQL数据库：运行时配置在config/config.yaml)
 ├── requirements.txt         # Python依赖
 └── README.md             # 本文件
 ```

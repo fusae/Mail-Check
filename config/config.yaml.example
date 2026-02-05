@@ -52,7 +52,13 @@ runtime:
   check_interval: 300
   log_level: "DEBUG"
   log_file: "logs/sentiment_monitor.log"
-  database_path: "data/processed_emails.db"
+  database_engine: "mysql"
+  mysql:
+    host: "127.0.0.1"
+    port: 3306
+    user: "mail-check"
+    password: "CHANGE_ME"
+    database: "mail-check"
 
 # Feedback Configuration
 feedback:

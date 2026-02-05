@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 舆情报告生成器 - Mail-Check专用版本
-从SQLite数据库读取舆情数据，自动生成详细分析报告
+从MySQL数据库读取舆情数据，自动生成详细分析报告
 """
 
 import db
@@ -22,51 +22,19 @@ except ImportError:
     WORDCLOUD_AVAILABLE = False
 
 class MailCheckReportGenerator:
-    """Mail-Check舆情报告生成器"""
+    """Mail-Check舆情报告生成器（MySQL版）"""
 
     def __init__(self, db_path: str = None):
         """
         初始化报告生成器
 
         Args:
-            db_path: SQLite数据库路径，默认从config.yaml读取
+            db_path: 已废弃（保留兼容，不再使用）
         """
         current_dir = os.path.dirname(os.path.abspath(__file__))
         self.project_root = os.path.dirname(current_dir)
-        self.db_path = self._normalize_db_path(db_path or self._get_default_db_path())
+        self.db_path = db_path
         self.conn = None
-
-    def _get_default_db_path(self) -> str:
-        """获取默认数据库路径"""
-        # 尝试从config.yaml读取
-        try:
-            import yaml
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            project_root = os.path.dirname(current_dir)
-            config_path = os.path.join(project_root, 'config', 'config.yaml')
-
-            with open(config_path, 'r', encoding='utf-8') as f:
-                config = yaml.safe_load(f)
-
-            db_path = config.get('runtime', {}).get(
-                'database_path',
-                os.path.join(project_root, 'data', 'processed_emails.db')
-            )
-            return db_path
-        except:
-            # 默认路径
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            project_root = os.path.dirname(current_dir)
-            return os.path.join(project_root, 'data', 'processed_emails.db')
-
-    def _normalize_db_path(self, path: str) -> str:
-        if not path:
-            return path
-        if os.path.isabs(path):
-            return path
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        project_root = os.path.dirname(current_dir)
-        return os.path.join(project_root, path)
 
     def connect(self):
         """连接数据库"""
@@ -255,7 +223,7 @@ class MailCheckReportGenerator:
         )
 
         # 生成报告文件
-        output_dir = Path(os.path.join(os.path.dirname(self.db_path), 'reports'))
+        output_dir = Path(os.path.join(self.project_root, 'data', 'reports'))
         output_dir.mkdir(exist_ok=True)
 
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')

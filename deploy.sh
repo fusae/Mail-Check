@@ -309,13 +309,8 @@ fi
 echo ""
 echo "=================================================================="
 
-# 数据库状态
-if [ -f "data/processed_emails.db" ]; then
-    DB_SIZE=$(du -h data/processed_emails.db | cut -f1)
-    echo -e "数据库: ${GREEN}存在${NC} (大小: $DB_SIZE)"
-else
-    echo -e "数据库: ${YELLOW}不存在${NC}"
-fi
+# 数据库状态（MySQL）
+echo -e "数据库: ${GREEN}MySQL${NC} (配置见 config/config.yaml)"
 EOF
     
     chmod +x status.sh

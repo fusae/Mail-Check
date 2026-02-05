@@ -17,6 +17,7 @@ ENV/
 # 日志
 logs/*.log
 *.log
+api_server.pid
 
 # 配置（敏感信息）
 .env
@@ -66,3 +67,6 @@ config/production.yaml
 *.env
 .env.local
 !.env.example
+web/.env.production
+web/.env.*.local
+web/.env.*.production

@@ -26,7 +26,6 @@ class SentimentAnalyzer:
 
         self.runtime_config = config.get('runtime', {})
         self.feedback_config = config.get('feedback', {})
-        self.db_path = self.runtime_config.get('database_path')
         self.project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         
         self.logger = logging.getLogger(__name__)

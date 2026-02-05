@@ -47,7 +47,7 @@ interface OpinionItem {
   createdAt: string;
 }
 
-const API_BASE = (import.meta.env.VITE_API_BASE as string) || "http://127.0.0.1:10087";
+const API_BASE = import.meta.env.VITE_API_BASE as string;
 const apiFetch = (path: string, options?: RequestInit) => fetch(`${API_BASE}${path}`, options);
 
 const severityMeta = {
