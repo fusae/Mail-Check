@@ -120,6 +120,21 @@ def execute(project_root: str, sql: str, params: Iterable[Any] = (), fetchone: b
             pass
 
 
+def execute_with_lastrowid(project_root: str, sql: str, params: Iterable[Any] = ()) -> int | None:
+    config = load_config(project_root)
+    engine = get_db_engine(config)
+    conn = connect(project_root)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(_adapt_sql(sql, engine), params)
+        return cursor.lastrowid
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def ensure_mysql_database(config: Dict[str, Any]):
     if not MYSQL_AVAILABLE:
         raise RuntimeError("未安装pymysql，请先安装后再使用MySQL。")
@@ -165,6 +180,7 @@ def _ensure_mysql_tables(project_root: str, config: Dict[str, Any]):
         CREATE TABLE IF NOT EXISTS negative_sentiments (
             id BIGINT PRIMARY KEY AUTO_INCREMENT,
             sentiment_id VARCHAR(255),
+            event_id BIGINT,
             hospital_name VARCHAR(255),
             title TEXT,
             source VARCHAR(255),
@@ -173,10 +189,27 @@ def _ensure_mysql_tables(project_root: str, config: Dict[str, Any]):
             severity VARCHAR(20),
             url TEXT,
             status VARCHAR(20) DEFAULT 'active',
+            is_duplicate TINYINT(1) DEFAULT 0,
             dismissed_at DATETIME,
             insight_text LONGTEXT,
             insight_at DATETIME,
             processed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS event_groups (
+            id BIGINT PRIMARY KEY AUTO_INCREMENT,
+            hospital_name VARCHAR(255),
+            fingerprint BIGINT UNSIGNED,
+            event_url VARCHAR(1024),
+            total_count BIGINT DEFAULT 1,
+            last_title TEXT,
+            last_reason TEXT,
+            last_source VARCHAR(255),
+            last_sentiment_id VARCHAR(255),
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            last_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     ''')
 
@@ -224,6 +257,24 @@ def _ensure_mysql_tables(project_root: str, config: Dict[str, Any]):
         )
         return cursor.fetchone() is not None
 
+    def _mysql_column_exists(table: str, column_name: str) -> bool:
+        cursor.execute(
+            """
+            SELECT 1
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = %s
+              AND COLUMN_NAME = %s
+            """,
+            (table, column_name),
+        )
+        return cursor.fetchone() is not None
+
+    if not _mysql_column_exists("negative_sentiments", "event_id"):
+        cursor.execute("ALTER TABLE negative_sentiments ADD COLUMN event_id BIGINT")
+    if not _mysql_column_exists("negative_sentiments", "is_duplicate"):
+        cursor.execute("ALTER TABLE negative_sentiments ADD COLUMN is_duplicate TINYINT(1) DEFAULT 0")
+
     if not _mysql_index_exists("negative_sentiments", "idx_negative_sentiments_processed_at"):
         cursor.execute('CREATE INDEX idx_negative_sentiments_processed_at ON negative_sentiments(processed_at)')
     if not _mysql_index_exists("negative_sentiments", "idx_negative_sentiments_status"):
@@ -232,8 +283,16 @@ def _ensure_mysql_tables(project_root: str, config: Dict[str, Any]):
         cursor.execute('CREATE INDEX idx_negative_sentiments_hospital ON negative_sentiments(hospital_name)')
     if not _mysql_index_exists("negative_sentiments", "idx_negative_sentiments_sentiment_id"):
         cursor.execute('CREATE INDEX idx_negative_sentiments_sentiment_id ON negative_sentiments(sentiment_id)')
+    if not _mysql_index_exists("negative_sentiments", "idx_negative_sentiments_event_id"):
+        cursor.execute('CREATE INDEX idx_negative_sentiments_event_id ON negative_sentiments(event_id)')
     if not _mysql_index_exists("feedback_queue", "idx_feedback_queue_user_status"):
         cursor.execute('CREATE INDEX idx_feedback_queue_user_status ON feedback_queue(user_id, status, sent_time)')
+    if not _mysql_index_exists("event_groups", "idx_event_groups_hospital_time"):
+        cursor.execute('CREATE INDEX idx_event_groups_hospital_time ON event_groups(hospital_name, last_seen_at)')
+    if not _mysql_index_exists("event_groups", "idx_event_groups_fingerprint"):
+        cursor.execute('CREATE INDEX idx_event_groups_fingerprint ON event_groups(fingerprint)')
+    if not _mysql_index_exists("event_groups", "idx_event_groups_url"):
+        cursor.execute('CREATE INDEX idx_event_groups_url ON event_groups(event_url)')
 
     conn.commit()
     conn.close()

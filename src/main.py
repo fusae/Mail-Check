@@ -9,7 +9,10 @@ import os
 import time
 import yaml
 import logging
-from datetime import datetime
+import re
+import hashlib
+from collections import Counter
+from datetime import datetime, timedelta
 import db
 
 # 添加src目录到路径
@@ -75,6 +78,154 @@ class SentimentMonitor:
     
     def _now_local_str(self):
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def _event_dedupe_config(self):
+        cfg = (self.config.get("runtime", {}) or {}).get("event_dedupe", {}) or {}
+        return {
+            "enabled": bool(cfg.get("enabled", True)),
+            "window_days": int(cfg.get("window_days", 7)),
+            "max_distance": int(cfg.get("max_distance", 4)),
+        }
+
+    def _tokenize_for_simhash(self, text: str):
+        text = (text or "").lower()
+        chinese_chars = re.findall(r"[\u4e00-\u9fff]", text)
+        alnum_words = re.findall(r"[a-z0-9]+", text)
+        return chinese_chars + alnum_words
+
+    def _compute_simhash(self, text: str) -> int:
+        tokens = self._tokenize_for_simhash(text)
+        if not tokens:
+            return 0
+        counts = Counter(tokens)
+        v = [0] * 64
+        for token, freq in counts.items():
+            h = int(hashlib.md5(token.encode("utf-8")).hexdigest(), 16)
+            weight = min(5, 1 + freq)
+            for i in range(64):
+                if (h >> i) & 1:
+                    v[i] += weight
+                else:
+                    v[i] -= weight
+        fingerprint = 0
+        for i in range(64):
+            if v[i] > 0:
+                fingerprint |= (1 << i)
+        return fingerprint
+
+    def _hamming_distance(self, a: int, b: int) -> int:
+        return bin(a ^ b).count("1")
+
+    def _match_or_create_event(self, sentiment, hospital_name, analysis):
+        cfg = self._event_dedupe_config()
+        if not cfg["enabled"]:
+            return None, False, None
+
+        url = (sentiment.get("url") or "").strip()
+        now = self._now_local_str()
+        window_start = (datetime.now() - timedelta(days=cfg["window_days"]))\
+            .strftime("%Y-%m-%d %H:%M:%S")
+
+        title = sentiment.get("title", "") or ""
+        reason = analysis.get("reason", "") or ""
+        source = sentiment.get("webName", "") or ""
+        sentiment_id = sentiment.get("id", "") or ""
+
+        # 硬匹配：URL 相同
+        if url:
+            row = db.execute(
+                self.project_root,
+                """
+                SELECT id, total_count, event_url
+                FROM event_groups
+                WHERE hospital_name = ? AND event_url = ?
+                ORDER BY last_seen_at DESC
+                LIMIT 1
+                """,
+                (hospital_name, url),
+                fetchone=True
+            )
+            if row:
+                total_count = (row.get("total_count") or 0) + 1
+                db.execute(
+                    self.project_root,
+                    """
+                    UPDATE event_groups
+                    SET total_count = total_count + 1,
+                        last_seen_at = ?,
+                        last_title = ?,
+                        last_reason = ?,
+                        last_source = ?,
+                        last_sentiment_id = ?
+                    WHERE id = ?
+                    """,
+                    (now, title, reason, source, sentiment_id, row["id"])
+                )
+                return row["id"], True, total_count
+
+        # 软匹配：SimHash + 时间窗 + 同医院
+        text = f"{title} {reason}".strip()
+        if not text:
+            text = title or reason
+
+        fingerprint = self._compute_simhash(text)
+        candidates = db.execute(
+            self.project_root,
+            """
+            SELECT id, fingerprint, total_count, event_url
+            FROM event_groups
+            WHERE hospital_name = ? AND last_seen_at >= ?
+            """,
+            (hospital_name, window_start),
+            fetchall=True
+        ) or []
+
+        best_row = None
+        best_dist = 999
+        for row in candidates:
+            fp = row.get("fingerprint")
+            if fp is None:
+                continue
+            dist = self._hamming_distance(int(fingerprint), int(fp))
+            if dist < best_dist:
+                best_dist = dist
+                best_row = row
+
+        if best_row and best_dist <= cfg["max_distance"]:
+            total_count = (best_row.get("total_count") or 0) + 1
+            db.execute(
+                self.project_root,
+                """
+                UPDATE event_groups
+                SET total_count = total_count + 1,
+                    last_seen_at = ?,
+                    last_title = ?,
+                    last_reason = ?,
+                    last_source = ?,
+                    last_sentiment_id = ?
+                WHERE id = ?
+                """,
+                (now, title, reason, source, sentiment_id, best_row["id"])
+            )
+            if url and not best_row.get("event_url"):
+                db.execute(
+                    self.project_root,
+                    "UPDATE event_groups SET event_url = ? WHERE id = ?",
+                    (url, best_row["id"])
+                )
+            return best_row["id"], True, total_count
+
+        # 新事件：创建事件池
+        event_id = db.execute_with_lastrowid(
+            self.project_root,
+            """
+            INSERT INTO event_groups
+            (hospital_name, fingerprint, event_url, total_count, last_title, last_reason, last_source, last_sentiment_id, created_at, last_seen_at)
+            VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+            """,
+            (hospital_name, fingerprint, url or None, title, reason, source, sentiment_id, now, now)
+        )
+        return event_id, False, 1
     
     def is_email_processed(self, token):
         """检查邮件是否已处理"""
@@ -101,17 +252,18 @@ class SentimentMonitor:
         except Exception:
             self.logger.warning(f"邮件已存在: {token[:20]}...")
     
-    def save_negative_sentiment(self, sentiment, hospital_name, analysis):
+    def save_negative_sentiment(self, sentiment, hospital_name, analysis, event_id=None, is_duplicate=False):
         """保存负面舆情"""
         db.execute(
             self.project_root,
             '''
             INSERT INTO negative_sentiments 
-            (sentiment_id, hospital_name, title, source, content, reason, severity, url, processed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (sentiment_id, event_id, hospital_name, title, source, content, reason, severity, url, is_duplicate, processed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''',
             (
                 sentiment.get('id', ''),
+                event_id,
                 hospital_name,
                 sentiment.get('title', ''),
                 sentiment.get('webName', ''),
@@ -119,6 +271,7 @@ class SentimentMonitor:
                 analysis['reason'],
                 analysis['severity'],
                 sentiment.get('url', ''),
+                1 if is_duplicate else 0,
                 self._now_local_str()
             )
         )
@@ -212,9 +365,17 @@ class SentimentMonitor:
                     print(f"AI判断: {analysis['reason']}")
                     print(f"严重程度: {analysis['severity']}")
                     print("!" * 50 + "\n")
-                    
+
+                    # 事件归并（重复舆情简化推送）
+                    event_id, is_duplicate, event_total = self._match_or_create_event(
+                        sentiment, hospital_name, analysis
+                    )
+
                     # 保存到数据库
-                    self.save_negative_sentiment(sentiment, hospital_name, analysis)
+                    self.save_negative_sentiment(
+                        sentiment, hospital_name, analysis,
+                        event_id=event_id, is_duplicate=is_duplicate
+                    )
 
                     # 发送通知并记录反馈队列
                     sentiment_info = {
@@ -223,11 +384,14 @@ class SentimentMonitor:
                         'title': sentiment.get('title', '无标题'),
                         'reason': analysis.get('reason', ''),
                         'severity': analysis.get('severity', 'medium'),
-                        'url': sentiment.get('url', '')
+                        'url': sentiment.get('url', ''),
+                        'duplicate': bool(is_duplicate),
+                        'event_id': event_id,
+                        'event_total': event_total
                     }
                     content = sentiment.get('allContent', '') or sentiment.get('content', '')
                     notify_result = self.notifier.send(
-                        title="发现负面舆情",
+                        title="发现负面舆情" if not is_duplicate else "重复舆情提醒",
                         content=content,
                         hospital_name=hospital_name,
                         sentiment_info=sentiment_info

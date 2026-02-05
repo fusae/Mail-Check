@@ -421,8 +421,27 @@ AI判断: {reason}
         sent_title = sentiment_info.get('title', '无标题')
         reason = sentiment_info.get('reason', '未判断')
         severity = sentiment_info.get('severity', 'medium')
+        is_duplicate = bool(sentiment_info.get('duplicate'))
+        event_total = sentiment_info.get('event_total')
         feedback_url = self._build_feedback_url(sentiment_id)
         feedback_line = f"\n**反馈链接：** [点击反馈]({feedback_url})\n" if feedback_url else ""
+        event_line = f"> **事件累计：** {event_total} 条\n" if event_total else ""
+
+        if is_duplicate:
+            return f"""### ♻️ 重复舆情提醒
+
+**{title}**
+
+> **医院：** {hospital_name}
+> **来源：** {source}
+> **标题：** {sent_title}
+> **AI判断：** {reason}
+> **严重程度：** {severity}
+{event_line}
+请注意该事件已多次出现。
+
+{feedback_line}
+"""
 
         return f"""### ⚠️ 舆情监控通知
 
@@ -472,6 +491,8 @@ AI判断: {reason}
             sent_title = sentiment_info.get('title', '无标题')
             reason = sentiment_info.get('reason', '未判断')
             severity = sentiment_info.get('severity', 'medium')
+            is_duplicate = bool(sentiment_info.get('duplicate'))
+            event_total = sentiment_info.get('event_total')
             url = sentiment_info.get('url', '')
             sentiment_id = sentiment_info.get('id') or sentiment_info.get('sentiment_id')
 
@@ -490,8 +511,31 @@ AI判断: {reason}
                 orig_link_line = ""
                 self.logger.warning("未获取到URL")
 
-            header = f"### ⚠️ 舆情监控通知\n\n**{title}**\n\n> **医院：** {hospital_name}\n> **来源：** {source}\n> **标题：** {sent_title}\n> **AI判断：** {reason}\n> **严重程度：** {severity}\n{orig_link_line}\n**详细内容：**\n\n"
-            footer = f"\n\n请及时查看详情。\n{feedback_line}"
+            event_line = f"> **事件累计：** {event_total} 条\n" if event_total else ""
+            if is_duplicate:
+                header = (
+                    f"### ♻️ 重复舆情提醒\n\n**{title}**\n\n"
+                    f"> **医院：** {hospital_name}\n"
+                    f"> **来源：** {source}\n"
+                    f"> **标题：** {sent_title}\n"
+                    f"> **AI判断：** {reason}\n"
+                    f"> **严重程度：** {severity}\n"
+                    f"{event_line}"
+                    f"{orig_link_line}\n"
+                )
+                footer = f"\n请注意该事件已多次出现。\n{feedback_line}"
+            else:
+                header = (
+                    f"### ⚠️ 舆情监控通知\n\n**{title}**\n\n"
+                    f"> **医院：** {hospital_name}\n"
+                    f"> **来源：** {source}\n"
+                    f"> **标题：** {sent_title}\n"
+                    f"> **AI判断：** {reason}\n"
+                    f"> **严重程度：** {severity}\n"
+                    f"{orig_link_line}\n"
+                    f"**详细内容：**\n\n"
+                )
+                footer = f"\n\n请及时查看详情。\n{feedback_line}"
 
             # 计算可用空间（字节）
             fixed_bytes = _utf8_len(header) + _utf8_len(footer)
@@ -502,11 +546,13 @@ AI判断: {reason}
                 )
                 available_bytes = 0
 
-            # 截断内容
+            # 截断内容（重复舆情无需正文）
             suffix = "\n...（内容过长已截断，点击反馈链接查看完整信息）"
             suffix_bytes = _utf8_len(suffix)
             content_bytes = _utf8_len(content)
-            if content_bytes > available_bytes:
+            if is_duplicate:
+                truncated_content = ""
+            elif content_bytes > available_bytes:
                 # 精确计算截断后的内容长度，确保加上提示后不超过限制
                 max_content_bytes = max(0, available_bytes - suffix_bytes)
                 truncated_content = _truncate_utf8(content, max_content_bytes)

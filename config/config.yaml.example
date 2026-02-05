@@ -59,6 +59,11 @@ runtime:
     user: "mail-check"
     password: "CHANGE_ME"
     database: "mail-check"
+  # 事件归并（重复舆情）
+  event_dedupe:
+    enabled: true
+    window_days: 7
+    max_distance: 4
 
 # Feedback Configuration
 feedback:
