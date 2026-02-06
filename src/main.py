@@ -13,6 +13,7 @@ import re
 import hashlib
 from collections import Counter
 from datetime import datetime, timedelta
+from urllib.parse import urlparse, parse_qs
 import db
 
 # 添加src目录到路径
@@ -116,33 +117,105 @@ class SentimentMonitor:
     def _hamming_distance(self, a: int, b: int) -> int:
         return bin(a ^ b).count("1")
 
+    def _normalize_event_url(self, url: str, source: str = "") -> str:
+        """
+        Normalize platform URLs for dedupe.
+        Goal: the same underlying content should map to the same key even if tracking params differ.
+        """
+        url = (url or "").strip()
+        if not url:
+            return ""
+
+        src = (source or "").strip()
+        u = url
+
+        try:
+            parsed = urlparse(url)
+        except Exception:
+            parsed = None
+
+        host = (parsed.netloc.lower() if parsed else "")
+        path = (parsed.path if parsed else "")
+        qs = (parse_qs(parsed.query) if parsed else {})
+
+        # Douyin: prefer stable video id
+        if src == "抖音" or "douyin.com" in host or "douyin.com" in u:
+            m = re.search(r"/video/(\d+)", u)
+            if not m:
+                m = re.search(r"/share/video/(\d+)", u)
+            if not m:
+                # Some share links use modal_id
+                modal = qs.get("modal_id", [])
+                if modal and isinstance(modal[0], str) and modal[0].isdigit():
+                    return f"douyin:{modal[0]}"
+            if m:
+                return f"douyin:{m.group(1)}"
+
+        # Xiaohongshu: prefer note id if available
+        if src == "小红书" or "xiaohongshu.com" in host or "xhslink.com" in host:
+            m = re.search(r"/explore/([0-9a-fA-F]+)", u)
+            if m:
+                return f"xhs:{m.group(1).lower()}"
+            note_id = (qs.get("noteId") or qs.get("note_id") or qs.get("id") or [""])[0]
+            if isinstance(note_id, str) and note_id:
+                return f"xhs:{note_id.lower()}"
+
+        # Generic: remove fragment; keep scheme+host+path; keep a small stable subset of query params.
+        scheme = (parsed.scheme.lower() if parsed and parsed.scheme else "http")
+        stable_keys = ["id", "mid", "tid", "sid", "video_id", "noteId", "note_id"]
+        stable_parts = []
+        for k in stable_keys:
+            if k in qs and qs[k]:
+                stable_parts.append(f"{k}={qs[k][0]}")
+        stable_q = ("?" + "&".join(stable_parts)) if stable_parts else ""
+        if host:
+            return f"{scheme}://{host}{path}{stable_q}"
+        return url
+
     def _match_or_create_event(self, sentiment, hospital_name, analysis):
         cfg = self._event_dedupe_config()
         if not cfg["enabled"]:
             return None, False, None
 
-        url = (sentiment.get("url") or "").strip()
+        raw_url = (sentiment.get("url") or "").strip()
+        source = sentiment.get("webName", "") or ""
+        norm_url = self._normalize_event_url(raw_url, source)
+        # Use normalized key for matching/storing. Keep raw_url separately for UI/linking.
+        url = norm_url or raw_url
         now = self._now_local_str()
         window_start = (datetime.now() - timedelta(days=cfg["window_days"]))\
             .strftime("%Y-%m-%d %H:%M:%S")
 
         title = sentiment.get("title", "") or ""
         reason = analysis.get("reason", "") or ""
-        source = sentiment.get("webName", "") or ""
         sentiment_id = sentiment.get("id", "") or ""
 
         # 硬匹配：URL 相同
-        if url:
+        # Backward compat: old rows may have stored raw_url; match both.
+        if url or raw_url:
+            keys = []
+            if url:
+                keys.append(url)
+            if raw_url and raw_url not in keys:
+                keys.append(raw_url)
+
+            if len(keys) == 1:
+                where = "event_url = ?"
+                params = (hospital_name, keys[0])
+            else:
+                where = "(event_url = ? OR event_url = ?)"
+                params = (hospital_name, keys[0], keys[1])
+
             row = db.execute(
                 self.project_root,
-                """
+                f"""
                 SELECT id, total_count, event_url
                 FROM event_groups
-                WHERE hospital_name = ? AND event_url = ?
+                WHERE hospital_name = ? AND {where}
                 ORDER BY last_seen_at DESC
                 LIMIT 1
                 """,
-                (hospital_name, url),
+                params,
                 fetchone=True
             )
             if row:
@@ -161,12 +234,27 @@ class SentimentMonitor:
                     """,
                     (now, title, reason, source, sentiment_id, row["id"])
                 )
+                # Prefer normalized key for future matches.
+                if url and row.get("event_url") != url:
+                    db.execute(
+                        self.project_root,
+                        "UPDATE event_groups SET event_url = ? WHERE id = ?",
+                        (url, row["id"]),
+                    )
                 return row["id"], True, total_count
 
         # 软匹配：SimHash + 时间窗 + 同医院
-        text = f"{title} {reason}".strip()
-        if not text:
-            text = title or reason
+        # Use title + a stable body prefix for stability; AI reason may vary between calls for the same event.
+        # Microvivid sometimes provides both allContent/content and ocrData; pick the longer one as the main body.
+        content_main = (sentiment.get("allContent") or sentiment.get("content") or "").strip()
+        ocr_main = (sentiment.get("ocrData") or "").strip()
+        body = content_main if len(content_main) >= len(ocr_main) else ocr_main
+        # Reduce sensitivity: only use the prefix; long tails often contain noisy timestamps/IDs/hashtags.
+        if len(body) > 400:
+            body = body[:400]
+        # Normalize whitespace a bit.
+        body = re.sub(r"\\s+", " ", body).strip()
+        text = f"{title} {body}".strip() or title
 
         fingerprint = self._compute_simhash(text)
         candidates = db.execute(

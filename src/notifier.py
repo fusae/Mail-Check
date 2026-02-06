@@ -593,7 +593,9 @@ AI判断: {reason}
 
             if result.get('errcode') == 0:
                 self.logger.info("✓ 企业微信通知发送成功")
-                self._send_wechat_mention(webhook_url, hospital_name, sentiment_info)
+                # Duplicate events should not repeatedly ping responsible staff.
+                if not bool((sentiment_info or {}).get("duplicate")):
+                    self._send_wechat_mention(webhook_url, hospital_name, sentiment_info)
                 return {'success': True}
             else:
                 self.logger.error(f"✗ 企业微信通知失败: {result.get('errmsg', '未知错误')}")
