@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Iterable, Tuple
+from typing import Any, Dict, Iterable, Tuple, Optional
 
 import yaml
 
@@ -147,7 +147,7 @@ def execute(project_root: str, sql: str, params: Iterable[Any] = (), fetchone: b
             pass
 
 
-def execute_with_lastrowid(project_root: str, sql: str, params: Iterable[Any] = ()) -> int | None:
+def execute_with_lastrowid(project_root: str, sql: str, params: Iterable[Any] = ()) -> Optional[int]:
     project_root = _resolve_project_root(project_root)
     config = load_config(project_root)
     engine = get_db_engine(config)

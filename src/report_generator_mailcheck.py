@@ -9,7 +9,7 @@ import db
 import pandas as pd
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 import os
 import json
 import tempfile
@@ -292,7 +292,7 @@ class MailCheckReportGenerator:
         self.close()
         return result
 
-    def _find_chinese_font(self) -> str | None:
+    def _find_chinese_font(self) -> Optional[str]:
         """尝试寻找系统中文字体路径"""
         candidates = [
             # macOS
@@ -316,7 +316,7 @@ class MailCheckReportGenerator:
                 return path
         return None
 
-    def _generate_wordcloud(self, report_data: Dict[str, Any], output_dir: Path, filename: str) -> str | None:
+    def _generate_wordcloud(self, report_data: Dict[str, Any], output_dir: Path, filename: str) -> Optional[str]:
         """根据关键词生成词云图片，返回相对文件名"""
         if not WORDCLOUD_AVAILABLE:
             print("[WARN] 未安装wordcloud，跳过关键词云生成")
