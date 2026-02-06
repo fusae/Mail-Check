@@ -244,17 +244,17 @@ class SentimentMonitor:
                 return row["id"], True, total_count
 
         # 软匹配：SimHash + 时间窗 + 同医院
-        # Use title + a stable body prefix for stability; AI reason may vary between calls for the same event.
-        # Microvivid sometimes provides both allContent/content and ocrData; pick the longer one as the main body.
-        content_main = (sentiment.get("allContent") or sentiment.get("content") or "").strip()
-        ocr_main = (sentiment.get("ocrData") or "").strip()
-        body = content_main if len(content_main) >= len(ocr_main) else ocr_main
-        # Reduce sensitivity: only use the prefix; long tails often contain noisy timestamps/IDs/hashtags.
-        if len(body) > 400:
-            body = body[:400]
-        # Normalize whitespace a bit.
-        body = re.sub(r"\\s+", " ", body).strip()
-        text = f"{title} {body}".strip() or title
+        #
+        # 按需求：软匹配仅采用“标题”做指纹（更可控、可解释）。
+        # 注意：如果标题为空，再兜底用正文避免指纹为 0。
+        text = re.sub(r"\\s+", " ", (title or "")).strip()
+        if not text:
+            content_main = (sentiment.get("allContent") or sentiment.get("content") or "").strip()
+            ocr_main = (sentiment.get("ocrData") or "").strip()
+            body = content_main if len(content_main) >= len(ocr_main) else ocr_main
+            if len(body) > 400:
+                body = body[:400]
+            text = re.sub(r"\\s+", " ", body).strip()
 
         fingerprint = self._compute_simhash(text)
         candidates = db.execute(

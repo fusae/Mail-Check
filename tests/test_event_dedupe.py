@@ -115,7 +115,7 @@ class EventDedupeTests(unittest.TestCase):
         m._now_local_str = lambda: "2026-02-06 22:32:39"
         return mail_main, m
 
-    def test_duplicate_detected_even_if_ai_reason_differs(self):
+    def test_duplicate_detected_by_title_even_if_ai_reason_differs(self):
         mail_main, m = self._make_monitor()
         fake_db = _FakeDB()
 
@@ -127,7 +127,8 @@ class EventDedupeTests(unittest.TestCase):
                 "id": "2461163801",
                 "webName": "抖音",
                 "title": "医院出来的路好黑啊，哈哈哈，明明处理过了我偷偷地又给扯开，好多🩸",
-                "allContent": "医院出来的路好黑啊，哈哈哈，明明处理过了我偷偷地又给扯开，好多🩸",
+                # Soft match should only use title; body differences should not affect dedupe.
+                "allContent": "正文A：这里是一些不同的内容，不应影响同标题去重",
                 "ocrData": "",
                 "url": "https://www.douyin.com/share/video/7600000000000000000?foo=bar",
             }
@@ -140,6 +141,7 @@ class EventDedupeTests(unittest.TestCase):
 
             sentiment_2 = dict(sentiment_1)
             sentiment_2["id"] = "2461164619"
+            sentiment_2["allContent"] = "正文B：与正文A不同"
             analysis_2 = {"is_negative": True, "reason": "理由B（不同）", "severity": "low"}
 
             event_id_2, is_dup_2, total_2 = m._match_or_create_event(sentiment_2, "东莞市滨海湾中心医院", analysis_2)
@@ -159,4 +161,3 @@ class EventDedupeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

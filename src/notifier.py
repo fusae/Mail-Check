@@ -593,9 +593,8 @@ AI判断: {reason}
 
             if result.get('errcode') == 0:
                 self.logger.info("✓ 企业微信通知发送成功")
-                # Duplicate events should not repeatedly ping responsible staff.
-                if not bool((sentiment_info or {}).get("duplicate")):
-                    self._send_wechat_mention(webhook_url, hospital_name, sentiment_info)
+                # 重复舆情也需要@提醒（但正文模板已简化为“重复舆情提醒”）
+                self._send_wechat_mention(webhook_url, hospital_name, sentiment_info)
                 return {'success': True}
             else:
                 self.logger.error(f"✗ 企业微信通知失败: {result.get('errmsg', '未知错误')}")
@@ -616,7 +615,11 @@ AI判断: {reason}
 
         title = sentiment_info.get('title', '无标题')
         name = mention.get('name', '')
-        content = f"@{name} 该医院有舆情需要关注：{hospital_name} | {title}"
+        is_duplicate = bool((sentiment_info or {}).get("duplicate"))
+        event_total = (sentiment_info or {}).get("event_total")
+        dup_tag = "【重复】" if is_duplicate else ""
+        total_tag = f"（累计{event_total}条）" if (is_duplicate and event_total) else ""
+        content = f"@{name} {dup_tag}该医院有舆情需要关注{total_tag}：{hospital_name} | {title}"
 
         payload = {
             "msgtype": "text",
