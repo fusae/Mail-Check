@@ -27,6 +27,10 @@ class SentimentAnalyzer:
         self.runtime_config = config.get('runtime', {})
         self.feedback_config = config.get('feedback', {})
         self.project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        # Backward-compat: older versions used `db_path` as a guard to decide
+        # whether feedback/rules can be loaded from DB. We are MySQL-only now,
+        # so DB availability should not be inferred from a sqlite path.
+        self.db_path = None
         
         self.logger = logging.getLogger(__name__)
     
@@ -347,9 +351,6 @@ OCR文本（ocrData）: {ocr_content} {ocr_note}
         return None
 
     def _get_feedback_by_sentiment_id(self, sentiment_id):
-        if not self.db_path:
-            return None
-
         try:
             row = db.execute(
                 self.project_root,
@@ -372,7 +373,7 @@ OCR文本（ocrData）: {ocr_content} {ocr_note}
             return None
 
     def _load_feedback_rules(self):
-        if not self.db_path or not self.feedback_config.get('enable_rules', True):
+        if not self.feedback_config.get('enable_rules', True):
             return []
 
         min_conf = self.feedback_config.get('rules_min_confidence', 0.7)
@@ -431,7 +432,7 @@ OCR文本（ocrData）: {ocr_content} {ocr_note}
         return "\n用户反馈规则（命中时优先考虑为非负面或负面）：\n" + "、".join(patterns) + "\n"
 
     def _build_feedback_context(self):
-        if not self.db_path or not self.feedback_config.get('enable_few_shot', True):
+        if not self.feedback_config.get('enable_few_shot', True):
             return ''
 
         limit = self.feedback_config.get('max_few_shot', 5)
