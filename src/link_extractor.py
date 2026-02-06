@@ -10,18 +10,114 @@ import re
 import yaml
 import logging
 import platform
-from playwright.async_api import async_playwright
+from typing import Iterable, List, Optional, Set
 from urllib.parse import urlparse, parse_qs
+
+import requests
+
+try:
+    # Playwright is optional now: CentOS 7 / glibc 2.17 often cannot run its bundled driver.
+    from playwright.async_api import async_playwright  # type: ignore
+except Exception:  # pragma: no cover
+    async_playwright = None
 
 class LinkExtractor:
     def __init__(self, config):
         self.config = config['browser']
         self.headless = self.config.get('headless', True)
         self.timeout = self.config.get('timeout', 30000)
+        self.prefer_http = bool(self.config.get('prefer_http', True))
+        self.allow_playwright_fallback = bool(self.config.get('allow_playwright_fallback', True))
         self.logger = logging.getLogger(__name__)
         
         # 存储拦截到的ID列表
         self.sentiment_ids = []
+
+    def _glibc_too_old_for_playwright(self) -> bool:
+        """
+        Playwright's bundled driver (node) typically requires glibc >= 2.27.
+        CentOS 7 is usually glibc 2.17, which will crash with:
+        "GLIBC_2.27 not found" / "GLIBCXX_xxx not found".
+        """
+        try:
+            libc, ver = platform.libc_ver()
+            if libc != "glibc" or not ver:
+                return False
+            parts = []
+            for p in ver.split("."):
+                try:
+                    parts.append(int(p))
+                except Exception:
+                    break
+            if not parts:
+                return False
+            major = parts[0]
+            minor = parts[1] if len(parts) > 1 else 0
+            return (major, minor) < (2, 27)
+        except Exception:
+            return False
+
+    def _extract_ids_from_text(self, text: str) -> Set[str]:
+        ids: Set[str] = set()
+        if not text:
+            return ids
+
+        # 1) Direct API URL strings e.g. "...searchListInfoH5?id=123,456"
+        for m in re.findall(r"searchListInfoH5\\?id=([0-9,]{10,})", text):
+            for x in m.split(","):
+                x = x.strip()
+                if x.isdigit() and len(x) >= 10:
+                    ids.add(x)
+
+        # 2) Common JSON field patterns
+        for m in re.findall(r"\"id\"\\s*:\\s*\"(\\d{10,})\"", text):
+            ids.add(m)
+        for m in re.findall(r"\"id\"\\s*:\\s*(\\d{10,})", text):
+            ids.add(m)
+
+        # 3) Conservative fallback: pick long digit runs that look like sentiment IDs.
+        # Avoid capturing unrelated short numbers.
+        for m in re.findall(r"\\b(\\d{10,})\\b", text):
+            ids.add(m)
+
+        return ids
+
+    def extract_ids_via_http(self, token: str) -> List[str]:
+        """
+        Try to extract IDs without any browser.
+        This works if the H5 page includes IDs (embedded JSON / pre-rendered HTML),
+        or contains the API URL strings.
+        """
+        url = f"https://lt.microvivid.com/h5List?token={token}"
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        }
+        try:
+            r = requests.get(url, headers=headers, timeout=20, allow_redirects=True)
+            r.raise_for_status()
+        except Exception as e:
+            self.logger.warning(f"HTTP方式访问失败（将尝试兜底）：{e}")
+            return []
+
+        # Some deployments may return JSON directly.
+        ctype = (r.headers.get("Content-Type") or "").lower()
+        if "application/json" in ctype:
+            try:
+                data = r.json()
+                # Heuristic: search any string fields for ID patterns.
+                blob = str(data)
+                ids = self._extract_ids_from_text(blob)
+                if ids:
+                    return sorted(ids)
+            except Exception:
+                pass
+
+        ids = self._extract_ids_from_text(r.text)
+        return sorted(ids)
     
     async def extract_ids(self, token):
         """访问舆情链接，提取ID列表"""
@@ -30,6 +126,34 @@ class LinkExtractor:
         url = f"https://lt.microvivid.com/h5List?token={token}"
         
         self.logger.info(f"开始访问: {url}")
+
+        # First try: no-browser HTTP extraction (works on CentOS 7 without Playwright).
+        if self.prefer_http:
+            http_ids = self.extract_ids_via_http(token)
+            if http_ids:
+                collected_ids.update(http_ids)
+                self.sentiment_ids = sorted(collected_ids)
+                self.logger.info(f"HTTP方式提取到 {len(self.sentiment_ids)} 个舆情ID")
+                return self.sentiment_ids
+            self.logger.info("HTTP方式未提取到ID，尝试浏览器兜底...")
+
+        if not self.allow_playwright_fallback:
+            self.logger.warning("已禁用Playwright兜底，返回空ID列表")
+            self.sentiment_ids = sorted(collected_ids)
+            return self.sentiment_ids
+
+        if async_playwright is None:
+            self.logger.error("Playwright未安装/不可用，且HTTP方式未取到ID")
+            self.sentiment_ids = sorted(collected_ids)
+            return self.sentiment_ids
+
+        if self._glibc_too_old_for_playwright():
+            self.logger.error(
+                "检测到glibc版本过低（CentOS 7 常见），Playwright driver通常无法启动。"
+                "建议：改用HTTP方式提取ID / 升级系统 / 使用Docker(Ubuntu)运行提取服务。"
+            )
+            self.sentiment_ids = sorted(collected_ids)
+            return self.sentiment_ids
 
         # Playwright driver crashes often show up as:
         # "Connection closed while reading from the driver"

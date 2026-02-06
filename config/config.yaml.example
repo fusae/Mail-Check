@@ -58,7 +58,8 @@ runtime:
     port: 3306
     user: "mail-check"
     password: "CHANGE_ME"
-    database: "mail-check"
+    # 推荐用下划线，避免部分工具/脚本对 "-" 的兼容问题；如你已创建 mail-check 也可以继续用。
+    database: "mail_check"
   # 事件归并（重复舆情）
   event_dedupe:
     enabled: true
@@ -79,3 +80,7 @@ feedback:
 browser:
   headless: true
   timeout: 30000
+  # 优先使用纯HTTP抓取页面内容提取舆情ID（CentOS 7 / glibc 2.17 环境下 Playwright 通常无法启动）
+  prefer_http: true
+  # HTTP提取失败时是否允许用 Playwright 兜底
+  allow_playwright_fallback: true
