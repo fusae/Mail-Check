@@ -82,42 +82,81 @@ class LinkExtractor:
 
         return ids
 
-    def extract_ids_via_http(self, token: str) -> List[str]:
+    def extract_ids_via_link_api(self, token: str) -> List[str]:
         """
-        Try to extract IDs without any browser.
-        This works if the H5 page includes IDs (embedded JSON / pre-rendered HTML),
-        or contains the API URL strings.
+        Preferred HTTP path:
+        1) Call token->link API:
+           https://console.microvivid.com/prod-api/system/link/<token>
+        2) Parse JSON response's longLink, e.g.
+           "https://lt.microvivid.com/h5List?id=245...,245...&programId=...&time=..."
+        3) Extract the comma-separated IDs from the longLink querystring `id=...`.
+
+        This avoids any browser / Playwright and works on older distros (CentOS 7).
         """
-        url = f"https://lt.microvivid.com/h5List?token={token}"
+        api_url = f"https://console.microvivid.com/prod-api/system/link/{token}"
         headers = {
             "User-Agent": (
                 "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                 "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
             ),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept": "application/json, text/plain, */*",
         }
         try:
-            r = requests.get(url, headers=headers, timeout=20, allow_redirects=True)
+            r = requests.get(api_url, headers=headers, timeout=20, allow_redirects=True)
             r.raise_for_status()
         except Exception as e:
-            self.logger.warning(f"HTTP方式访问失败（将尝试兜底）：{e}")
+            self.logger.warning(f"link接口访问失败（{api_url}）：{e}")
             return []
 
-        # Some deployments may return JSON directly.
-        ctype = (r.headers.get("Content-Type") or "").lower()
-        if "application/json" in ctype:
-            try:
-                data = r.json()
-                # Heuristic: search any string fields for ID patterns.
-                blob = str(data)
-                ids = self._extract_ids_from_text(blob)
-                if ids:
-                    return sorted(ids)
-            except Exception:
-                pass
+        # Try strict JSON first.
+        long_link: Optional[str] = None
+        try:
+            data = r.json()
+            # Common shapes:
+            # - {"data": {"longLink": "..."}}
+            # - {"longLink": "..."}
+            if isinstance(data, dict):
+                if isinstance(data.get("data"), dict) and isinstance(data["data"].get("longLink"), str):
+                    long_link = data["data"]["longLink"]
+                elif isinstance(data.get("longLink"), str):
+                    long_link = data["longLink"]
+        except Exception:
+            # Fallback: try to locate longLink in text.
+            m = re.search(r"\"longLink\"\\s*:\\s*\"([^\"]+)\"", r.text or "")
+            if m:
+                long_link = m.group(1)
 
-        ids = self._extract_ids_from_text(r.text)
+        if not long_link:
+            self.logger.info("link接口未返回longLink，HTTP方式将尝试其他路径")
+            return []
+
+        try:
+            parsed = urlparse(long_link)
+            params = parse_qs(parsed.query)
+            id_param = (params.get("id") or [""])[0]
+            ids = [x.strip() for x in id_param.split(",") if x.strip().isdigit()]
+            ids = [x for x in ids if len(x) >= 10]
+            if ids:
+                return ids
+        except Exception as e:
+            self.logger.warning(f"解析longLink失败：{e}")
+            return []
+
+        # As a last resort, try regex extraction.
+        ids = self._extract_ids_from_text(long_link)
         return sorted(ids)
+
+    def extract_ids_via_http(self, token: str) -> List[str]:
+        """
+        HTTP-only path (no browser):
+        Prefer the token->link API, which returns a longLink containing `id=...`.
+
+        (We intentionally do NOT scrape the H5 page HTML anymore: success rate is low
+        because many pages are JS shells that only fetch IDs after runtime.)
+        """
+        # Best effort: token->link API first (more reliable than scraping H5 shell).
+        ids = self.extract_ids_via_link_api(token)
+        return sorted(set(ids)) if ids else []
     
     async def extract_ids(self, token):
         """访问舆情链接，提取ID列表"""
@@ -187,11 +226,6 @@ class LinkExtractor:
                     await page.goto(url, wait_until='networkidle')
                     await page.wait_for_timeout(3000)
 
-                    if not collected_ids:
-                        self.logger.warning("未通过API捕获到ID，尝试从页面内容提取")
-                        page_ids = await self.extract_ids_from_page(page)
-                        collected_ids.update(page_ids)
-
                     self.sentiment_ids = sorted(collected_ids)
                     self.logger.info(f"总共提取到 {len(self.sentiment_ids)} 个舆情ID")
                     return self.sentiment_ids
@@ -250,27 +284,6 @@ class LinkExtractor:
         
         return []
     
-    async def extract_ids_from_page(self, page):
-        """从页面内容中提取ID"""
-        try:
-            # 获取页面内容
-            content = await page.content()
-
-            # 尝试匹配页面中的ID（如果页面中有显示）
-            # 这里可以根据实际情况调整正则表达式
-            # 示例：查找16位数字ID
-            pattern = r'"id":\s*"(\d{10,})"'
-            matches = re.findall(pattern, content)
-
-            if matches:
-                self.logger.info(f"从页面内容提取到 {len(matches)} 个ID")
-                return list(set(matches))
-
-        except Exception as e:
-            self.logger.error(f"从页面提取ID失败: {e}")
-
-        return []
-
 if __name__ == '__main__':
     # 测试代码
     with open('config/config.yaml', 'r', encoding='utf-8') as f:
