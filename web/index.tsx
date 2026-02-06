@@ -47,8 +47,13 @@ interface OpinionItem {
   createdAt: string;
 }
 
-const API_BASE = import.meta.env.VITE_API_BASE as string;
-const apiFetch = (path: string, options?: RequestInit) => fetch(`${API_BASE}${path}`, options);
+const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)?.trim() || "";
+const apiFetch = (path: string, options?: RequestInit) => {
+  if (!API_BASE) {
+    return Promise.reject(new Error("未配置 VITE_API_BASE（前端无法找到后端API地址）"));
+  }
+  return fetch(`${API_BASE}${path}`, options);
+};
 
 const severityMeta = {
   high: {

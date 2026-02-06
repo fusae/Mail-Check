@@ -19,7 +19,32 @@ except Exception:
     MYSQL_AVAILABLE = False
 
 
+def _resolve_project_root(start_path: str) -> str:
+    """
+    Accept either repo root or a subdir (e.g. src/) and find the repo root that contains
+    config/config.yaml. This prevents callers accidentally passing src/ and breaking config load.
+    """
+    if not start_path:
+        return os.getcwd()
+
+    cur = os.path.abspath(start_path)
+    if os.path.isfile(cur):
+        cur = os.path.dirname(cur)
+
+    for _ in range(8):
+        if os.path.isfile(os.path.join(cur, "config", "config.yaml")):
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+
+    # Fallback: keep original behavior.
+    return os.path.abspath(start_path)
+
+
 def load_config(project_root: str) -> Dict[str, Any]:
+    project_root = _resolve_project_root(project_root)
     config_path = os.path.join(project_root, "config", "config.yaml")
     with open(config_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
@@ -83,6 +108,7 @@ class _MysqlCompatConnection:
 
 
 def connect(project_root: str):
+    project_root = _resolve_project_root(project_root)
     config = load_config(project_root)
     engine = get_db_engine(config)
     if not MYSQL_AVAILABLE:
@@ -102,6 +128,7 @@ def connect(project_root: str):
 
 
 def execute(project_root: str, sql: str, params: Iterable[Any] = (), fetchone: bool = False, fetchall: bool = False):
+    project_root = _resolve_project_root(project_root)
     config = load_config(project_root)
     engine = get_db_engine(config)
     conn = connect(project_root)
@@ -121,6 +148,7 @@ def execute(project_root: str, sql: str, params: Iterable[Any] = (), fetchone: b
 
 
 def execute_with_lastrowid(project_root: str, sql: str, params: Iterable[Any] = ()) -> int | None:
+    project_root = _resolve_project_root(project_root)
     config = load_config(project_root)
     engine = get_db_engine(config)
     conn = connect(project_root)
@@ -157,6 +185,7 @@ def ensure_mysql_database(config: Dict[str, Any]):
 
 
 def ensure_schema(project_root: str):
+    project_root = _resolve_project_root(project_root)
     config = load_config(project_root)
     ensure_mysql_database(config)
     _ensure_mysql_tables(project_root, config)
