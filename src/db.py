@@ -292,7 +292,9 @@ def _ensure_mysql_tables(project_root: str, config: Dict[str, Any]):
     if not _mysql_index_exists("event_groups", "idx_event_groups_fingerprint"):
         cursor.execute('CREATE INDEX idx_event_groups_fingerprint ON event_groups(fingerprint)')
     if not _mysql_index_exists("event_groups", "idx_event_groups_url"):
-        cursor.execute('CREATE INDEX idx_event_groups_url ON event_groups(event_url)')
+        # utf8mb4 下 1024 字符可能超过 InnoDB 索引长度上限（3072 bytes）。
+        # 用前缀索引既能支持等值查询的快速过滤，又避免建索引失败。
+        cursor.execute('CREATE INDEX idx_event_groups_url ON event_groups(event_url(191))')
 
     conn.commit()
     conn.close()
