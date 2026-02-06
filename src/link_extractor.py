@@ -9,6 +9,7 @@ import asyncio
 import re
 import yaml
 import logging
+import platform
 from playwright.async_api import async_playwright
 from urllib.parse import urlparse, parse_qs
 
@@ -29,60 +30,83 @@ class LinkExtractor:
         url = f"https://lt.microvivid.com/h5List?token={token}"
         
         self.logger.info(f"开始访问: {url}")
-        
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=self.headless)
-            context = await browser.new_context()
-            page = await context.new_page()
-            
-            # 设置超时
-            page.set_default_timeout(self.timeout)
-            
-            try:
-                # 监控网络请求
-                async def handle_route(route, request):
-                    # 监听API请求
-                    if 'searchListInfoH5' in request.url:
-                        self.logger.info(f"捕获到API请求: {request.url}")
-                        
-                        # 提取ID参数
-                        ids = self.extract_ids_from_url(request.url)
-                        if ids:
-                            collected_ids.update(ids)
-                            self.logger.info(f"提取到 {len(ids)} 个舆情ID: {ids}")
-                    
-                    await route.continue_()
-                
-                await page.route('**/*', handle_route)
 
-                # 访问页面（失败则重试）
-                max_retries = 2
-                for attempt in range(1, max_retries + 2):
-                    try:
-                        await page.goto(url, wait_until='networkidle')
-                        # 等待页面完全加载
-                        await page.wait_for_timeout(3000)
-                        break
-                    except Exception as e:
-                        if attempt > max_retries:
-                            raise
-                        self.logger.warning(f"页面加载失败，重试 {attempt}/{max_retries}: {e}")
-                        await page.wait_for_timeout(1000)
-                
-                # 如果没有捕获到ID，尝试从页面提取
-                if not collected_ids:
-                    self.logger.warning("未通过API捕获到ID，尝试从页面内容提取")
-                    page_ids = await self.extract_ids_from_page(page)
-                    collected_ids.update(page_ids)
-                
-                self.sentiment_ids = sorted(collected_ids)
-                self.logger.info(f"总共提取到 {len(self.sentiment_ids)} 个舆情ID")
-                
+        # Playwright driver crashes often show up as:
+        # "Connection closed while reading from the driver"
+        # which is usually an OS dependency / glibc / browser-install issue (not business logic).
+        browser = None
+        context = None
+        page = None
+
+        max_retries = 2  # init + goto retries
+        last_err = None
+        for attempt in range(1, max_retries + 2):
+            try:
+                async with async_playwright() as p:
+                    browser = await p.chromium.launch(headless=self.headless)
+                    context = await browser.new_context()
+                    page = await context.new_page()
+
+                    page.set_default_timeout(self.timeout)
+
+                    async def handle_route(route, request):
+                        if 'searchListInfoH5' in request.url:
+                            self.logger.info(f"捕获到API请求: {request.url}")
+                            ids = self.extract_ids_from_url(request.url)
+                            if ids:
+                                collected_ids.update(ids)
+                                self.logger.info(f"提取到 {len(ids)} 个舆情ID: {ids}")
+                        await route.continue_()
+
+                    await page.route('**/*', handle_route)
+
+                    await page.goto(url, wait_until='networkidle')
+                    await page.wait_for_timeout(3000)
+
+                    if not collected_ids:
+                        self.logger.warning("未通过API捕获到ID，尝试从页面内容提取")
+                        page_ids = await self.extract_ids_from_page(page)
+                        collected_ids.update(page_ids)
+
+                    self.sentiment_ids = sorted(collected_ids)
+                    self.logger.info(f"总共提取到 {len(self.sentiment_ids)} 个舆情ID")
+                    return self.sentiment_ids
             except Exception as e:
-                self.logger.error(f"提取ID失败: {e}")
+                last_err = e
+                msg = str(e)
+                # Add a targeted hint for the most common server-side failure mode.
+                if "Connection closed while reading from the driver" in msg or "Connection.init" in msg:
+                    self.logger.error(
+                        "Playwright driver 启动失败（通常是系统依赖/GLIBC/浏览器未安装导致）。"
+                        f" os={platform.platform()} python={platform.python_version()} err={e}"
+                    )
+                else:
+                    self.logger.error(f"提取ID失败: {e}")
+                if attempt <= max_retries:
+                    self.logger.warning(f"重试 {attempt}/{max_retries}...")
+                    await asyncio.sleep(1)
             finally:
-                await browser.close()
+                # Best-effort cleanup; objects may be None if init failed early.
+                try:
+                    if page:
+                        await page.close()
+                except Exception:
+                    pass
+                try:
+                    if context:
+                        await context.close()
+                except Exception:
+                    pass
+                try:
+                    if browser:
+                        await browser.close()
+                except Exception:
+                    pass
         
+        # Preserve old behavior: return [] on failure (caller will "skip").
+        self.sentiment_ids = sorted(collected_ids)
+        if last_err:
+            self.logger.error(f"提取ID最终失败: {last_err}")
         return self.sentiment_ids
     
     def extract_ids_from_url(self, url):

@@ -59,7 +59,9 @@ _default_cors_origins = [
     "http://localhost:10088",
     "http://127.0.0.1:10088",
 ]
-CORS_ORIGINS = config.get("runtime", {}).get("cors_origins") or _default_cors_origins
+_cfg_origins = (config.get("runtime", {}) or {}).get("cors_origins") or []
+# Merge defaults + config to avoid config overriding dev origins accidentally.
+CORS_ORIGINS = sorted(set(_default_cors_origins + list(_cfg_origins)))
 REPORTS_DIR = os.path.join(project_root, 'data', 'reports')
 
 

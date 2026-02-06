@@ -231,7 +231,8 @@ def _ensure_mysql_tables(project_root: str, config: Dict[str, Any]):
             id BIGINT PRIMARY KEY AUTO_INCREMENT,
             hospital_name VARCHAR(255),
             fingerprint BIGINT UNSIGNED,
-            event_url VARCHAR(1024),
+            -- URL may exceed 1KB in some platforms; keep it in-row but index only a prefix.
+            event_url VARCHAR(2048),
             total_count BIGINT DEFAULT 1,
             last_title TEXT,
             last_reason TEXT,
@@ -286,6 +287,13 @@ def _ensure_mysql_tables(project_root: str, config: Dict[str, Any]):
         )
         return cursor.fetchone() is not None
 
+    def _mysql_index_info(table: str, index_name: str) -> Dict[str, Any] | None:
+        cursor.execute(
+            "SHOW INDEX FROM `{}` WHERE Key_name=%s".format(table),
+            (index_name,),
+        )
+        return cursor.fetchone()
+
     def _mysql_column_exists(table: str, column_name: str) -> bool:
         cursor.execute(
             """
@@ -324,6 +332,17 @@ def _ensure_mysql_tables(project_root: str, config: Dict[str, Any]):
         # utf8mb4 下 1024 字符可能超过 InnoDB 索引长度上限（3072 bytes）。
         # 用前缀索引既能支持等值查询的快速过滤，又避免建索引失败。
         cursor.execute('CREATE INDEX idx_event_groups_url ON event_groups(event_url(191))')
+    else:
+        # If the index exists but is not a prefix index (Sub_part is NULL), rebuild it.
+        info = _mysql_index_info("event_groups", "idx_event_groups_url") or {}
+        sub_part = info.get("Sub_part")
+        col = info.get("Column_name")
+        if col == "event_url" and (sub_part is None or int(sub_part) <= 0 or int(sub_part) > 191):
+            try:
+                cursor.execute("DROP INDEX idx_event_groups_url ON event_groups")
+            except Exception:
+                pass
+            cursor.execute('CREATE INDEX idx_event_groups_url ON event_groups(event_url(191))')
 
     conn.commit()
     conn.close()
