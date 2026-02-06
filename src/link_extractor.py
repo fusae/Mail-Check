@@ -7,7 +7,6 @@
 
 import asyncio
 import re
-import yaml
 import logging
 import platform
 from typing import Iterable, List, Optional, Set
@@ -27,7 +26,9 @@ class LinkExtractor:
         self.headless = self.config.get('headless', True)
         self.timeout = self.config.get('timeout', 30000)
         self.prefer_http = bool(self.config.get('prefer_http', True))
-        self.allow_playwright_fallback = bool(self.config.get('allow_playwright_fallback', True))
+        # Playwright is kept as a last-resort fallback, but should be OFF by default:
+        # CentOS 7 / glibc 2.17 typically cannot run Playwright's bundled driver.
+        self.allow_playwright_fallback = bool(self.config.get('allow_playwright_fallback', False))
         self.logger = logging.getLogger(__name__)
         
         # 存储拦截到的ID列表
@@ -56,31 +57,6 @@ class LinkExtractor:
             return (major, minor) < (2, 27)
         except Exception:
             return False
-
-    def _extract_ids_from_text(self, text: str) -> Set[str]:
-        ids: Set[str] = set()
-        if not text:
-            return ids
-
-        # 1) Direct API URL strings e.g. "...searchListInfoH5?id=123,456"
-        for m in re.findall(r"searchListInfoH5\\?id=([0-9,]{10,})", text):
-            for x in m.split(","):
-                x = x.strip()
-                if x.isdigit() and len(x) >= 10:
-                    ids.add(x)
-
-        # 2) Common JSON field patterns
-        for m in re.findall(r"\"id\"\\s*:\\s*\"(\\d{10,})\"", text):
-            ids.add(m)
-        for m in re.findall(r"\"id\"\\s*:\\s*(\\d{10,})", text):
-            ids.add(m)
-
-        # 3) Conservative fallback: pick long digit runs that look like sentiment IDs.
-        # Avoid capturing unrelated short numbers.
-        for m in re.findall(r"\\b(\\d{10,})\\b", text):
-            ids.add(m)
-
-        return ids
 
     def extract_ids_via_link_api(self, token: str) -> List[str]:
         """
@@ -142,9 +118,7 @@ class LinkExtractor:
             self.logger.warning(f"解析longLink失败：{e}")
             return []
 
-        # As a last resort, try regex extraction.
-        ids = self._extract_ids_from_text(long_link)
-        return sorted(ids)
+        return []
 
     def extract_ids_via_http(self, token: str) -> List[str]:
         """
@@ -283,16 +257,3 @@ class LinkExtractor:
             self.logger.error(f"解析URL ID失败: {e}")
         
         return []
-    
-if __name__ == '__main__':
-    # 测试代码
-    with open('config/config.yaml', 'r', encoding='utf-8') as f:
-        config = yaml.safe_load(f)
-
-    extractor = LinkExtractor(config)
-
-    # 使用之前获取的测试token
-    test_token = "cb6ea6cecdb84722abd65ed4d6a3147e"
-
-    ids = asyncio.run(extractor.extract_ids(test_token))
-    print(f"提取到的ID列表: {ids}")
