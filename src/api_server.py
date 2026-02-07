@@ -9,7 +9,9 @@ import hashlib
 import hmac
 import logging
 import os
+import random
 import re
+import time
 import db
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -583,19 +585,46 @@ def call_ai(prompt):
 
     api_url = ai_config.get("api_url")
     timeout = ai_config.get("timeout", 60)
-    max_retries = ai_config.get("max_retries", 2)
-    last_exc = None
+    # Retry policy: keep backward compat with max_retries, but add exponential backoff
+    # and only retry on transient failures.
+    max_retries = int(ai_config.get("max_retries", 2))
+    max_attempts = max(1, max_retries + 1)
+    backoff_base = float(ai_config.get("retry_backoff_seconds", 1.0))
+    backoff_cap = float(ai_config.get("retry_backoff_max_seconds", 8.0))
+    retry_statuses = set(ai_config.get("retry_statuses", [429, 500, 502, 503, 504]))
 
-    for attempt in range(1, max_retries + 2):
+    last_exc = None
+    for attempt in range(1, max_attempts + 1):
         try:
             resp = requests.post(api_url, headers=headers, json=data, timeout=timeout)
+
+            if resp.status_code in retry_statuses and attempt < max_attempts:
+                retry_after = resp.headers.get("Retry-After")
+                sleep_s = min(backoff_cap, backoff_base * (2 ** (attempt - 1)))
+                if retry_after:
+                    try:
+                        sleep_s = min(backoff_cap, float(retry_after))
+                    except Exception:
+                        pass
+                # small jitter to avoid thundering herd
+                sleep_s = min(backoff_cap, sleep_s + random.random() * 0.25)
+                logging.warning(
+                    f"AI调用返回{resp.status_code}（第{attempt}次），等待{sleep_s:.1f}s后重试"
+                )
+                time.sleep(sleep_s)
+                continue
+
             resp.raise_for_status()
             result = resp.json()
             return result["choices"][0]["message"]["content"]
-        except Exception as exc:
+        except requests.exceptions.RequestException as exc:
             last_exc = exc
-            logging.warning(f"AI调用失败（第{attempt}次）: {exc}")
-            continue
+            if attempt >= max_attempts:
+                break
+            sleep_s = min(backoff_cap, backoff_base * (2 ** (attempt - 1)))
+            sleep_s = min(backoff_cap, sleep_s + random.random() * 0.25)
+            logging.warning(f"AI调用失败（第{attempt}次）: {exc}，等待{sleep_s:.1f}s后重试")
+            time.sleep(sleep_s)
 
     raise last_exc
 

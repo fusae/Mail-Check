@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import time
 import db
 
 import requests
@@ -33,7 +34,56 @@ class SentimentAnalyzer:
         self.db_path = None
         
         self.logger = logging.getLogger(__name__)
-    
+
+    def _post_with_retry(self, url, headers, data, timeout):
+        """
+        Simple retry + exponential backoff for transient AI/API failures.
+        Retries on:
+        - network exceptions (timeout/connection)
+        - selected HTTP statuses (default: 429/500/502/503/504)
+        """
+        retry_cfg = (self.ai_config.get("retry", {}) or {})
+        max_attempts = int(retry_cfg.get("max_attempts", 3))
+        backoff_base = float(retry_cfg.get("backoff_seconds", 1.0))
+        backoff_cap = float(retry_cfg.get("backoff_max_seconds", 8.0))
+        retry_statuses = set(retry_cfg.get("retry_statuses", [429, 500, 502, 503, 504]))
+
+        last_exc = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                resp = requests.post(url, headers=headers, json=data, timeout=timeout)
+
+                # Retry on selected HTTP statuses.
+                if resp.status_code in retry_statuses and attempt < max_attempts:
+                    retry_after = resp.headers.get("Retry-After")
+                    sleep_s = min(backoff_cap, backoff_base * (2 ** (attempt - 1)))
+                    if retry_after:
+                        try:
+                            sleep_s = min(backoff_cap, float(retry_after))
+                        except Exception:
+                            pass
+                    self.logger.warning(
+                        f"AI请求返回{resp.status_code}，准备重试 {attempt}/{max_attempts - 1}，等待{sleep_s:.1f}s"
+                    )
+                    time.sleep(sleep_s)
+                    continue
+
+                resp.raise_for_status()
+                return resp
+            except requests.exceptions.RequestException as exc:
+                last_exc = exc
+                if attempt >= max_attempts:
+                    break
+                sleep_s = min(backoff_cap, backoff_base * (2 ** (attempt - 1)))
+                self.logger.warning(
+                    f"AI请求异常: {exc}，准备重试 {attempt}/{max_attempts - 1}，等待{sleep_s:.1f}s"
+                )
+                time.sleep(sleep_s)
+
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("AI请求失败（未知原因）")
+
     def analyze(self, sentiment, hospital_name):
         """分析舆情是否为负面"""
         rule_result = self._apply_feedback_rules(sentiment)
@@ -77,12 +127,7 @@ class SentimentAnalyzer:
             
             # 发送请求
             self.logger.info(f"调用智谱AI分析舆情...")
-            response = requests.post(
-                self.api_url,
-                headers=headers,
-                json=data,
-                timeout=30
-            )
+            response = self._post_with_retry(self.api_url, headers, data, timeout=30)
             response.raise_for_status()
             
             result = response.json()
@@ -167,12 +212,7 @@ class SentimentAnalyzer:
             }
 
             self.logger.info("调用DeepSeek分析舆情...")
-            response = requests.post(
-                self.api_url,
-                headers=headers,
-                json=data,
-                timeout=30
-            )
+            response = self._post_with_retry(self.api_url, headers, data, timeout=30)
             response.raise_for_status()
 
             result = response.json()
