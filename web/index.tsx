@@ -33,6 +33,9 @@ type Severity = "low" | "medium" | "high";
 
 interface OpinionItem {
   id: string;
+  event_id?: number | null;
+  event_total?: number | null;
+  is_duplicate?: boolean;
   hospital: string;
   title: string;
   source: string;
@@ -190,6 +193,7 @@ const OpinionDashboard = () => {
   const [severityFilter, setSeverityFilter] = useState<Severity | "all">("all");
   const [hospitalFilter, setHospitalFilter] = useState("all");
   const [showDismissed, setShowDismissed] = useState(false);
+  const [groupByEvent, setGroupByEvent] = useState(true);
   const [timeRange, setTimeRange] = useState<"24h" | "7d" | "30d">("7d");
   const [trendMode, setTrendMode] = useState<"count" | "score">("count");
   const [tooltipContent, setTooltipContent] = useState<{ title: string; content: string; position: { x: number; y: number } } | null>(null);
@@ -422,6 +426,37 @@ const OpinionDashboard = () => {
       return true;
     });
   }, [opinions, severityFilter, hospitalFilter, showDismissed]);
+
+  const displayOpinions = useMemo(() => {
+    if (!groupByEvent) return filteredOpinions;
+
+    // Keep the most recent item per event. If no event_id, fall back to sentiment id.
+    const keyOf = (item: OpinionItem) => (item.event_id ? `e:${item.event_id}` : `s:${item.id}`);
+    const counts = new Map<string, number>();
+    for (const item of filteredOpinions) {
+      const k = keyOf(item);
+      counts.set(k, (counts.get(k) || 0) + 1);
+    }
+
+    const seen = new Set<string>();
+    const out: OpinionItem[] = [];
+    for (const item of filteredOpinions) {
+      const k = keyOf(item);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      const inferredTotal = counts.get(k) || 1;
+      const mergedTotal = Number(item.event_total || 0) > 0 ? item.event_total : inferredTotal;
+      out.push({ ...item, event_total: mergedTotal });
+    }
+    return out;
+  }, [filteredOpinions, groupByEvent]);
+
+  const listStatsLabel = useMemo(() => {
+    if (!groupByEvent) {
+      return `${filteredOpinions.length} 条记录${statsOverride ? ` / 共 ${statsOverride.total} 条` : ""}`;
+    }
+    return `${displayOpinions.length} 个事件 / ${filteredOpinions.length} 条舆情${statsOverride ? ` / 共 ${statsOverride.total} 条` : ""}`;
+  }, [groupByEvent, displayOpinions.length, filteredOpinions.length, statsOverride]);
 
   const activeOpinions = useMemo(() => {
     return opinions.filter((o) => o.status !== "dismissed");
@@ -1191,7 +1226,7 @@ const OpinionDashboard = () => {
             <div className="flex flex-wrap items-center justify-between gap-4">
               <h2 className="font-display text-xl font-semibold">实时舆情列表</h2>
               <span className="text-xs text-slate-500">
-                {filteredOpinions.length} 条记录{statsOverride ? ` / 共 ${statsOverride.total} 条` : ""}
+                {listStatsLabel}
               </span>
             </div>
             <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-slate-800/70 bg-slate-900/40 px-4 py-3 text-xs text-slate-400">
@@ -1232,6 +1267,15 @@ const OpinionDashboard = () => {
                 />
                 显示误报
               </label>
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={groupByEvent}
+                  onChange={(e) => setGroupByEvent(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-700 bg-slate-950 text-indigo-500"
+                />
+                按事件聚合
+              </label>
             </div>
 
             <div className="flex-1 min-h-0">
@@ -1240,15 +1284,16 @@ const OpinionDashboard = () => {
                   <Loader2 className="h-8 w-8 animate-spin text-indigo-400" />
                   <p className="mt-4 text-xs uppercase tracking-widest text-slate-500">加载中</p>
                 </div>
-              ) : filteredOpinions.length === 0 ? (
+              ) : displayOpinions.length === 0 ? (
                 <div className="flex h-full min-h-[320px] flex-col items-center justify-center rounded-3xl border border-slate-800/70 bg-slate-900/40 text-slate-500">
                   暂无舆情数据
                 </div>
               ) : (
                 <div className="h-full space-y-4 overflow-y-auto pr-2">
-                  {filteredOpinions.map((item) => {
+                  {displayOpinions.map((item) => {
                     const meta = severityMeta[normalizeSeverity(item.severity)];
                     const scoreValue = Math.round((item.score || meta.score) * 100);
+                    const eventTotal = Number(item.event_total || 0) || 0;
                     return (
                       <article
                         key={item.id}
@@ -1260,6 +1305,16 @@ const OpinionDashboard = () => {
                           <span className={`rounded-full border px-3 py-1 text-[10px] font-semibold uppercase tracking-widest ${meta.pill}`}>
                             {meta.label}
                           </span>
+                          {eventTotal > 1 && (
+                            <span className="rounded-full border border-indigo-500/40 bg-indigo-500/10 px-2 py-1 text-[10px] uppercase tracking-wider text-indigo-200">
+                              事件池 {eventTotal} 条
+                            </span>
+                          )}
+                          {item.is_duplicate && (
+                            <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] uppercase tracking-wider text-amber-200">
+                              重复
+                            </span>
+                          )}
                           {item.status === "dismissed" && (
                             <span className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[10px] uppercase tracking-wider text-emerald-200">
                               已误报
@@ -1366,6 +1421,25 @@ const OpinionDashboard = () => {
                 <p className="text-xs uppercase tracking-widest text-slate-500">舆情信息</p>
                 <p className="mt-2 text-base font-semibold text-white">{selectedItem.hospital}</p>
                 <p className="mt-1 text-xs text-slate-400">{selectedItem.source} · {formatTime(selectedItem.createdAt)}</p>
+                {(selectedItem.event_id || selectedItem.event_total || selectedItem.is_duplicate) && (
+                  <div className="mt-3 flex flex-wrap items-center gap-2 text-[10px] text-slate-300">
+                    {selectedItem.event_total ? (
+                      <span className="rounded-full border border-indigo-500/40 bg-indigo-500/10 px-2 py-1 uppercase tracking-wider text-indigo-200">
+                        事件池 {selectedItem.event_total} 条
+                      </span>
+                    ) : null}
+                    {selectedItem.is_duplicate ? (
+                      <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-1 uppercase tracking-wider text-amber-200">
+                        重复舆情
+                      </span>
+                    ) : null}
+                    {selectedItem.event_id ? (
+                      <span className="rounded-full border border-slate-700/60 bg-slate-900/40 px-2 py-1 uppercase tracking-wider text-slate-300">
+                        Event #{selectedItem.event_id}
+                      </span>
+                    ) : null}
+                  </div>
+                )}
                 {selectedItem.url && (
                   <a
                     href={selectedItem.url}
@@ -1377,6 +1451,52 @@ const OpinionDashboard = () => {
                   </a>
                 )}
               </div>
+
+              {selectedItem.event_id && (
+                <div className="rounded-2xl border border-slate-800/70 bg-slate-950/40 p-4">
+                  <p className="text-xs uppercase tracking-widest text-slate-500">事件追踪（本地已加载范围）</p>
+                  <div className="mt-3 space-y-2">
+                    {opinions
+                      .filter((o) => o.event_id && o.event_id === selectedItem.event_id)
+                      .slice()
+                      .sort((a, b) => {
+                        const at = parseLocalDateTime(a.createdAt)?.getTime() ?? 0;
+                        const bt = parseLocalDateTime(b.createdAt)?.getTime() ?? 0;
+                        return at - bt;
+                      })
+                      .slice(0, 12)
+                      .map((o) => (
+                        <button
+                          key={o.id}
+                          type="button"
+                          onClick={() => handleInsight(o)}
+                          className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-800/70 bg-slate-900/40 px-3 py-2 text-left text-xs text-slate-300 hover:border-indigo-500/40"
+                        >
+                          <div className="min-w-0">
+                            <div className="truncate text-slate-200">{o.title}</div>
+                            <div className="mt-1 flex items-center gap-2 text-[10px] text-slate-500">
+                              <span>{formatTime(o.createdAt)}</span>
+                              <span>·</span>
+                              <span>{o.source}</span>
+                              {o.is_duplicate ? (
+                                <>
+                                  <span>·</span>
+                                  <span className="text-amber-200">重复</span>
+                                </>
+                              ) : null}
+                            </div>
+                          </div>
+                          <ArrowUpRight className="h-4 w-4 flex-none text-slate-500" />
+                        </button>
+                      ))}
+                    {selectedItem.event_total && selectedItem.event_total > 12 && (
+                      <p className="pt-1 text-[10px] text-slate-500">
+                        注：事件池共 {selectedItem.event_total} 条，这里仅展示当前已加载的最多 12 条。
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
 
               <div className="rounded-2xl border border-slate-800/70 bg-slate-950/40 p-4">
                 <p className="text-xs uppercase tracking-widest text-slate-500">舆情内容</p>

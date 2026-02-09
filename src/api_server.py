@@ -102,6 +102,9 @@ def row_to_opinion(row, include_content=True, preview_len=240):
         truncated = len(content) > preview_len
     return {
         "id": row["sentiment_id"],
+        "event_id": row.get("event_id"),
+        "event_total": row.get("event_total"),
+        "is_duplicate": bool(row.get("is_duplicate") or 0),
         "hospital": row["hospital_name"],
         "title": row["title"],
         "source": row["source"],
@@ -304,11 +307,25 @@ def list_opinions():
 
     rows = query_db(
         """
-        SELECT sentiment_id, hospital_name, title, source, content, reason,
-               severity, url, status, dismissed_at, processed_at
-        FROM negative_sentiments
-        WHERE (? = 'all' OR COALESCE(NULLIF(status, ''), 'active') = ?)
-        ORDER BY processed_at DESC
+        SELECT
+            ns.sentiment_id,
+            ns.event_id,
+            eg.total_count AS event_total,
+            ns.is_duplicate,
+            ns.hospital_name,
+            ns.title,
+            ns.source,
+            ns.content,
+            ns.reason,
+            ns.severity,
+            ns.url,
+            ns.status,
+            ns.dismissed_at,
+            ns.processed_at
+        FROM negative_sentiments ns
+        LEFT JOIN event_groups eg ON eg.id = ns.event_id
+        WHERE (? = 'all' OR COALESCE(NULLIF(ns.status, ''), 'active') = ?)
+        ORDER BY ns.processed_at DESC
         LIMIT ? OFFSET ?
         """,
         (status, status, limit, offset),
@@ -526,10 +543,24 @@ def get_trend():
 def get_opinion(sentiment_id):
     row = query_db(
         """
-        SELECT sentiment_id, hospital_name, title, source, content, reason,
-               severity, url, status, dismissed_at, processed_at
-        FROM negative_sentiments
-        WHERE sentiment_id = ?
+        SELECT
+            ns.sentiment_id,
+            ns.event_id,
+            eg.total_count AS event_total,
+            ns.is_duplicate,
+            ns.hospital_name,
+            ns.title,
+            ns.source,
+            ns.content,
+            ns.reason,
+            ns.severity,
+            ns.url,
+            ns.status,
+            ns.dismissed_at,
+            ns.processed_at
+        FROM negative_sentiments ns
+        LEFT JOIN event_groups eg ON eg.id = ns.event_id
+        WHERE ns.sentiment_id = ?
         """,
         (sentiment_id,),
         fetchone=True,
@@ -553,11 +584,25 @@ def search_opinions():
     like = f"%{query}%"
     rows = query_db(
         """
-        SELECT sentiment_id, hospital_name, title, source, content, reason,
-               severity, url, status, dismissed_at, processed_at
-        FROM negative_sentiments
-        WHERE hospital_name LIKE ? OR title LIKE ? OR content LIKE ? OR source LIKE ?
-        ORDER BY processed_at DESC
+        SELECT
+            ns.sentiment_id,
+            ns.event_id,
+            eg.total_count AS event_total,
+            ns.is_duplicate,
+            ns.hospital_name,
+            ns.title,
+            ns.source,
+            ns.content,
+            ns.reason,
+            ns.severity,
+            ns.url,
+            ns.status,
+            ns.dismissed_at,
+            ns.processed_at
+        FROM negative_sentiments ns
+        LEFT JOIN event_groups eg ON eg.id = ns.event_id
+        WHERE ns.hospital_name LIKE ? OR ns.title LIKE ? OR ns.content LIKE ? OR ns.source LIKE ?
+        ORDER BY ns.processed_at DESC
         LIMIT ? OFFSET ?
         """,
         (like, like, like, like, limit, offset),
