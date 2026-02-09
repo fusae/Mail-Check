@@ -82,10 +82,21 @@ class SentimentMonitor:
 
     def _event_dedupe_config(self):
         cfg = (self.config.get("runtime", {}) or {}).get("event_dedupe", {}) or {}
+        ai_cfg = (cfg.get("ai_referee", {}) or {})
         return {
             "enabled": bool(cfg.get("enabled", True)),
             "window_days": int(cfg.get("window_days", 7)),
             "max_distance": int(cfg.get("max_distance", 4)),
+            # Optional AI referee:
+            # - Only used for "grey zone" soft matches; hard URL matches don't need it.
+            # - Default dist_min=1 so exact-title matches (distance=0) don't incur extra AI calls.
+            "ai_referee": {
+                "enabled": bool(ai_cfg.get("enabled", False)),
+                "dist_min": int(ai_cfg.get("dist_min", 1)),
+                "dist_max": int(ai_cfg.get("dist_max", 4)),
+                # If AI is unavailable, merge anyway when rules say it's duplicate.
+                "fail_open": bool(ai_cfg.get("fail_open", True)),
+            },
         }
 
     def _tokenize_for_simhash(self, text: str):
@@ -260,7 +271,7 @@ class SentimentMonitor:
         candidates = db.execute(
             self.project_root,
             """
-            SELECT id, fingerprint, total_count, event_url
+            SELECT id, fingerprint, total_count, event_url, last_title, last_reason, last_source
             FROM event_groups
             WHERE hospital_name = ? AND last_seen_at >= ?
             """,
@@ -278,6 +289,47 @@ class SentimentMonitor:
             if dist < best_dist:
                 best_dist = dist
                 best_row = row
+
+        if best_row and best_dist <= cfg["max_distance"]:
+            # Optional AI referee (grey zone): ask AI whether it is truly the same event.
+            ai_cfg = cfg.get("ai_referee", {}) or {}
+            ai_enabled = bool(ai_cfg.get("enabled"))
+            dist_min = int(ai_cfg.get("dist_min", 1))
+            dist_max = int(ai_cfg.get("dist_max", cfg["max_distance"]))
+            fail_open = bool(ai_cfg.get("fail_open", True))
+
+            if ai_enabled and dist_min <= best_dist <= dist_max:
+                try:
+                    judge = getattr(self, "sentiment_analyzer", None)
+                    judge_fn = getattr(judge, "judge_same_event", None)
+                    if callable(judge_fn):
+                        a = {
+                            "source": source,
+                            "title": title,
+                            "reason": reason,
+                            "url": raw_url or url,
+                        }
+                        b = {
+                            "source": best_row.get("last_source") or "",
+                            "title": best_row.get("last_title") or "",
+                            "reason": best_row.get("last_reason") or "",
+                            "url": best_row.get("event_url") or "",
+                        }
+                        ai_res = judge_fn(hospital_name, a, b)
+                        if isinstance(ai_res, dict):
+                            same_event = ai_res.get("same_event")
+                            if same_event is False:
+                                # AI veto: treat as new event.
+                                best_row = None
+                            elif same_event is True:
+                                pass
+                            else:
+                                # Unknown AI output: keep rule decision (fail-open).
+                                pass
+                except Exception as e:
+                    self.logger.warning(f"AI事件判重失败（dist={best_dist}）：{e}")
+                    if not fail_open:
+                        best_row = None
 
         if best_row and best_dist <= cfg["max_distance"]:
             total_count = (best_row.get("total_count") or 0) + 1

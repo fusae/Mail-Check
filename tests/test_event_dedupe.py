@@ -158,6 +158,48 @@ class EventDedupeTests(unittest.TestCase):
         self.assertEqual(k1, "douyin:7599293256921227897")
         self.assertEqual(k2, "douyin:7599293256921227897")
 
+    def test_ai_referee_can_veto_soft_match(self):
+        mail_main, m = self._make_monitor()
+        fake_db = _FakeDB()
+
+        # Enable AI referee for grey zone.
+        m.config["runtime"]["event_dedupe"]["ai_referee"] = {
+            "enabled": True,
+            "dist_min": 1,
+            "dist_max": 4,
+            "fail_open": True,
+        }
+
+        class _FakeAnalyzer:
+            def judge_same_event(self, hospital_name, a, b):
+                return {"same_event": False, "reason": "不同事件", "confidence": "high"}
+
+        m.sentiment_analyzer = _FakeAnalyzer()
+
+        # Force grey-zone distance to trigger AI referee (without relying on real simhash properties).
+        m._hamming_distance = lambda a, b: 2
+
+        old_db = mail_main.db
+        mail_main.db = fake_db
+        try:
+            s1 = {"id": "1", "webName": "抖音", "title": "标题A", "allContent": "", "ocrData": "", "url": ""}
+            a1 = {"is_negative": True, "reason": "理由A", "severity": "low"}
+            e1, dup1, t1 = m._match_or_create_event(s1, "东莞市人民医院", a1)
+            self.assertIsNotNone(e1)
+            self.assertFalse(dup1)
+            self.assertEqual(t1, 1)
+
+            s2 = {"id": "2", "webName": "抖音", "title": "标题B", "allContent": "", "ocrData": "", "url": ""}
+            a2 = {"is_negative": True, "reason": "理由B", "severity": "low"}
+            e2, dup2, t2 = m._match_or_create_event(s2, "东莞市人民医院", a2)
+
+            # AI veto => new group.
+            self.assertNotEqual(e2, e1)
+            self.assertFalse(dup2)
+            self.assertEqual(t2, 1)
+        finally:
+            mail_main.db = old_db
+
 
 if __name__ == "__main__":
     unittest.main()

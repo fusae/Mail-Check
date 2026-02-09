@@ -96,6 +96,83 @@ class SentimentAnalyzer:
             return self._analyze_with_deepseek(sentiment, hospital_name)
         self.logger.warning(f"不支持的AI提供商: {self.provider}")
         return self._default_analysis(sentiment, error_reason=f"不支持的AI提供商: {self.provider}")
+
+    def judge_same_event(self, hospital_name, a, b):
+        """
+        AI referee: decide whether two items describe the same public-opinion event.
+        This is intentionally strict and lightweight (yes/no + short reason).
+
+        Returns dict:
+          { "same_event": bool, "reason": str, "confidence": "high|medium|low" }
+        May raise on request failure.
+        """
+        a = a or {}
+        b = b or {}
+
+        # Keep payload small.
+        def _clip(s, n):
+            s = (s or "").strip()
+            return s if len(s) <= n else (s[:n] + "...")
+
+        prompt = f"""你是医院舆情事件管理员。请判断下面两条舆情是否属于同一“舆情事件”（同一核心争议点/同一传播内容）。
+
+判断标准（同时满足更倾向 yes）：
+1. 指向同一医院/同一地点（或同一医院周边）
+2. 围绕同一争议点/同一投诉点/同一爆料
+3. 叙事细节、人物、时间线高度一致（哪怕URL不同）
+
+如果只是“同医院但不同事情”，返回 no。
+
+舆情A：
+- 医院: {hospital_name}
+- 来源: {_clip(a.get('source'), 20)}
+- 标题: {_clip(a.get('title'), 120)}
+- 摘要/理由: {_clip(a.get('reason'), 160)}
+- URL: {_clip(a.get('url'), 200)}
+
+舆情B：
+- 医院: {hospital_name}
+- 来源: {_clip(b.get('source'), 20)}
+- 标题: {_clip(b.get('title'), 120)}
+- 摘要/理由: {_clip(b.get('reason'), 160)}
+- URL: {_clip(b.get('url'), 200)}
+
+只返回JSON（不要代码块，不要多余文字）:
+{{
+  "same_event": true/false,
+  "reason": "20字以内",
+  "confidence": "high/medium/low"
+}}"""
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}"
+        }
+        data = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": "你是一个严谨的舆情事件归并助手。"},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.0,
+            "max_tokens": 200
+        }
+
+        self.logger.info("调用AI进行事件判重确认...")
+        resp = self._post_with_retry(self.api_url, headers, data, timeout=30)
+        result = resp.json()
+        content = result['choices'][0]['message']['content']
+        self.logger.info(f"AI事件判重返回: {content}")
+
+        parsed = json.loads(self._extract_json_block(content))
+        same_event = self._coerce_bool(parsed.get("same_event"))
+        if same_event is None:
+            raise ValueError("AI返回缺少/无法解析 same_event")
+        return {
+            "same_event": bool(same_event),
+            "reason": parsed.get("reason", "") or "",
+            "confidence": parsed.get("confidence", "low") or "low",
+        }
     
     def _analyze_with_zhipu(self, sentiment, hospital_name):
         """使用智谱AI分析"""
