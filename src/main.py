@@ -256,16 +256,19 @@ class SentimentMonitor:
 
         # 软匹配：SimHash + 时间窗 + 同医院
         #
-        # 按需求：软匹配仅采用“标题”做指纹（更可控、可解释）。
-        # 注意：如果标题为空，再兜底用正文避免指纹为 0。
-        text = re.sub(r"\\s+", " ", (title or "")).strip()
+        # 采用“标题 + AI理由”做指纹，标题为空时兜底正文，避免指纹为 0。
+        title_fp = re.sub(r"\s+", " ", (title or "")).strip()
+        reason_fp = re.sub(r"\s+", " ", (reason or "")).strip()
+        if len(reason_fp) > 200:
+            reason_fp = reason_fp[:200]
+        text = " ".join(part for part in [title_fp, reason_fp] if part).strip()
         if not text:
             content_main = (sentiment.get("allContent") or sentiment.get("content") or "").strip()
             ocr_main = (sentiment.get("ocrData") or "").strip()
             body = content_main if len(content_main) >= len(ocr_main) else ocr_main
             if len(body) > 400:
                 body = body[:400]
-            text = re.sub(r"\\s+", " ", body).strip()
+            text = re.sub(r"\s+", " ", body).strip()
 
         fingerprint = self._compute_simhash(text)
         candidates = db.execute(
@@ -290,15 +293,21 @@ class SentimentMonitor:
                 best_dist = dist
                 best_row = row
 
-        if best_row and best_dist <= cfg["max_distance"]:
-            # Optional AI referee (grey zone): ask AI whether it is truly the same event.
+        should_merge = False
+        if best_row:
+            max_distance = cfg["max_distance"]
+            rule_hit = best_dist <= max_distance
+
+            # Optional AI referee (grey zone): can veto rule match and can rescue close non-rule match.
             ai_cfg = cfg.get("ai_referee", {}) or {}
             ai_enabled = bool(ai_cfg.get("enabled"))
             dist_min = int(ai_cfg.get("dist_min", 1))
-            dist_max = int(ai_cfg.get("dist_max", cfg["max_distance"]))
+            dist_max = int(ai_cfg.get("dist_max", max_distance))
             fail_open = bool(ai_cfg.get("fail_open", True))
+            in_ai_window = ai_enabled and dist_min <= best_dist <= dist_max
 
-            if ai_enabled and dist_min <= best_dist <= dist_max:
+            should_merge = rule_hit
+            if in_ai_window:
                 try:
                     judge = getattr(self, "sentiment_analyzer", None)
                     judge_fn = getattr(judge, "judge_same_event", None)
@@ -318,20 +327,21 @@ class SentimentMonitor:
                         ai_res = judge_fn(hospital_name, a, b)
                         if isinstance(ai_res, dict):
                             same_event = ai_res.get("same_event")
-                            if same_event is False:
-                                # AI veto: treat as new event.
-                                best_row = None
-                            elif same_event is True:
-                                pass
-                            else:
-                                # Unknown AI output: keep rule decision (fail-open).
-                                pass
+                            if same_event is True:
+                                should_merge = True
+                            elif same_event is False:
+                                should_merge = False
+                            elif not rule_hit:
+                                # Non-rule match with unknown AI output.
+                                should_merge = fail_open
+                        elif not rule_hit:
+                            should_merge = fail_open
                 except Exception as e:
                     self.logger.warning(f"AI事件判重失败（dist={best_dist}）：{e}")
-                    if not fail_open:
-                        best_row = None
+                    if not rule_hit:
+                        should_merge = fail_open
 
-        if best_row and best_dist <= cfg["max_distance"]:
+        if best_row and should_merge:
             total_count = (best_row.get("total_count") or 0) + 1
             db.execute(
                 self.project_root,

@@ -115,7 +115,7 @@ class EventDedupeTests(unittest.TestCase):
         m._now_local_str = lambda: "2026-02-06 22:32:39"
         return mail_main, m
 
-    def test_duplicate_detected_by_title_even_if_ai_reason_differs(self):
+    def test_duplicate_detected_by_soft_match(self):
         mail_main, m = self._make_monitor()
         fake_db = _FakeDB()
 
@@ -127,7 +127,7 @@ class EventDedupeTests(unittest.TestCase):
                 "id": "2461163801",
                 "webName": "抖音",
                 "title": "医院出来的路好黑啊，哈哈哈，明明处理过了我偷偷地又给扯开，好多🩸",
-                # Soft match should only use title; body differences should not affect dedupe.
+                # Soft match uses title/reason fingerprint; body differences should not affect dedupe.
                 "allContent": "正文A：这里是一些不同的内容，不应影响同标题去重",
                 "ocrData": "",
                 "url": "https://www.douyin.com/share/video/7600000000000000000?foo=bar",
@@ -142,7 +142,8 @@ class EventDedupeTests(unittest.TestCase):
             sentiment_2 = dict(sentiment_1)
             sentiment_2["id"] = "2461164619"
             sentiment_2["allContent"] = "正文B：与正文A不同"
-            analysis_2 = {"is_negative": True, "reason": "理由B（不同）", "severity": "low"}
+            # Keep reason stable to make test deterministic for SimHash distance threshold.
+            analysis_2 = {"is_negative": True, "reason": "理由A", "severity": "low"}
 
             event_id_2, is_dup_2, total_2 = m._match_or_create_event(sentiment_2, "东莞市滨海湾中心医院", analysis_2)
             self.assertEqual(event_id_2, event_id_1)
@@ -197,6 +198,47 @@ class EventDedupeTests(unittest.TestCase):
             self.assertNotEqual(e2, e1)
             self.assertFalse(dup2)
             self.assertEqual(t2, 1)
+        finally:
+            mail_main.db = old_db
+
+    def test_ai_referee_can_rescue_non_rule_soft_match(self):
+        mail_main, m = self._make_monitor()
+        fake_db = _FakeDB()
+
+        m.config["runtime"]["event_dedupe"]["max_distance"] = 2
+        m.config["runtime"]["event_dedupe"]["ai_referee"] = {
+            "enabled": True,
+            "dist_min": 3,
+            "dist_max": 8,
+            "fail_open": False,
+        }
+
+        class _FakeAnalyzer:
+            def judge_same_event(self, hospital_name, a, b):
+                return {"same_event": True, "reason": "同事件", "confidence": "high"}
+
+        m.sentiment_analyzer = _FakeAnalyzer()
+        # Force distance outside rule threshold but inside AI window.
+        m._hamming_distance = lambda a, b: 6
+
+        old_db = mail_main.db
+        mail_main.db = fake_db
+        try:
+            s1 = {"id": "11", "webName": "抖音", "title": "标题A", "allContent": "", "ocrData": "", "url": ""}
+            a1 = {"is_negative": True, "reason": "理由A", "severity": "low"}
+            e1, dup1, t1 = m._match_or_create_event(s1, "东莞市人民医院", a1)
+            self.assertIsNotNone(e1)
+            self.assertFalse(dup1)
+            self.assertEqual(t1, 1)
+
+            s2 = {"id": "12", "webName": "抖音", "title": "标题B", "allContent": "", "ocrData": "", "url": ""}
+            a2 = {"is_negative": True, "reason": "理由B", "severity": "low"}
+            e2, dup2, t2 = m._match_or_create_event(s2, "东莞市人民医院", a2)
+
+            # Rule misses (dist=6 > max_distance=2), AI says same => merge.
+            self.assertEqual(e2, e1)
+            self.assertTrue(dup2)
+            self.assertEqual(t2, 2)
         finally:
             mail_main.db = old_db
 

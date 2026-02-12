@@ -1277,6 +1277,11 @@ const OpinionDashboard = () => {
                 按事件聚合
               </label>
             </div>
+            <p className="mt-2 text-[11px] text-slate-500">
+              {groupByEvent
+                ? "已按事件聚合：每个事件仅显示最新一条。"
+                : "未聚合：同一事件的多条舆情会分别显示。"}
+            </p>
 
             <div className="flex-1 min-h-0">
               {isLoading ? (
@@ -1294,10 +1299,15 @@ const OpinionDashboard = () => {
                     const meta = severityMeta[normalizeSeverity(item.severity)];
                     const scoreValue = Math.round((item.score || meta.score) * 100);
                     const eventTotal = Number(item.event_total || 0) || 0;
+                    const duplicateEventUngrouped = !groupByEvent && eventTotal > 1;
                     return (
                       <article
                         key={item.id}
-                        className={`group rounded-3xl border border-slate-800/70 bg-slate-900/45 p-6 backdrop-blur transition hover:border-indigo-500/50 ${meta.glow}`}
+                        className={`group rounded-3xl border border-slate-800/70 bg-slate-900/45 p-6 backdrop-blur transition hover:border-indigo-500/50 ${meta.glow} ${
+                          duplicateEventUngrouped
+                            ? "ring-1 ring-indigo-400/40 border-indigo-500/40"
+                            : ""
+                        }`}
                       >
                     <div className="flex items-start justify-between gap-4">
                       <div>
