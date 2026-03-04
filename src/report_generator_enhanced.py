@@ -9,10 +9,14 @@ Enhanced Sentiment Report Generator
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 from collections import Counter
 import re
 import json
+import os
+
+import requests
+import yaml
 
 try:
     import jieba
@@ -33,6 +37,8 @@ class EnhancedReportGenerator:
     """增强版舆情报告生成器"""
 
     def __init__(self):
+        self.project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.ai_config = self._load_ai_config()
         self.platform_names = {
             '抖音': '抖音',
             'douyin': '抖音',
@@ -68,6 +74,16 @@ class EnhancedReportGenerator:
             'medium': '🟠 高',
             'low': '🟡 中'
         }
+
+    def _load_ai_config(self) -> Dict[str, Any]:
+        """读取AI配置（DeepSeek/OpenAI兼容接口）"""
+        cfg_path = os.path.join(self.project_root, "config", "config.yaml")
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            return cfg.get("ai", {}) or {}
+        except Exception:
+            return {}
 
     def normalize_platform(self, platform: str) -> str:
         """标准化平台名称"""
@@ -253,12 +269,14 @@ class EnhancedReportGenerator:
 
             total += base_reach
 
-        if total >= 10000000:
-            return f"{total // 10000000}千万+"
+        if total >= 100000000:
+            return f"{round(total / 100000000, 1)}亿+"
+        elif total >= 10000000:
+            return f"{round(total / 10000000, 1)}千万+"
         elif total >= 10000:
-            return f"{total // 10000}万+"
+            return f"{round(total / 10000, 1)}万+"
         elif total >= 1000:
-            return f"{total // 1000}千+"
+            return f"{round(total / 1000, 1)}千+"
         else:
             return str(total)
 
@@ -622,12 +640,54 @@ class EnhancedReportGenerator:
 
     def _are_titles_similar(self, title1: str, title2: str) -> bool:
         """判断标题是否相似"""
-        # 简单的相似度判断：有3个以上相同的词
-        words1 = set(title1.split())
-        words2 = set(title2.split())
+        t1 = (title1 or "").strip()
+        t2 = (title2 or "").strip()
+        if not t1 or not t2:
+            return False
+        if t1 == t2:
+            return True
+        # 子串命中可视为同一事件（常见于标题前后缀变化）
+        if len(t1) >= 8 and len(t2) >= 8 and (t1 in t2 or t2 in t1):
+            return True
 
-        intersection = words1.intersection(words2)
-        return len(intersection) >= 3
+        tokens1 = self._tokenize_title(t1)
+        tokens2 = self._tokenize_title(t2)
+        if not tokens1 or not tokens2:
+            return False
+
+        intersection = tokens1.intersection(tokens2)
+        union_size = len(tokens1 | tokens2)
+        jaccard = (len(intersection) / union_size) if union_size else 0
+
+        # 中文标题常较短，阈值适当放宽
+        return len(intersection) >= 2 or jaccard >= 0.4
+
+    def _tokenize_title(self, title: str) -> set:
+        """对中文标题进行鲁棒分词，兼容无空格文本。"""
+        text = (title or "").lower().strip()
+        if not text:
+            return set()
+
+        tokens = set()
+
+        # 英文/数字片段
+        tokens.update(re.findall(r"[a-z0-9]+", text))
+
+        # 中文词：优先jieba，退化到2-3字n-gram
+        zh_text = "".join(re.findall(r"[\u4e00-\u9fff]", text))
+        if zh_text:
+            if JIEBA_AVAILABLE:
+                for w in jieba.cut(zh_text):
+                    w = w.strip()
+                    if len(w) >= 2:
+                        tokens.add(w)
+            else:
+                for n in (2, 3):
+                    for i in range(0, max(0, len(zh_text) - n + 1)):
+                        tokens.add(zh_text[i:i+n])
+
+        stop = {"医院", "患者", "事件", "回应", "通报", "情况", "视频", "网络", "网友"}
+        return {t for t in tokens if len(t) >= 2 and t not in stop}
 
     def _build_event_timeline(self, df: pd.DataFrame) -> Dict[str, Any]:
         """构建事件时间轴"""
@@ -861,11 +921,15 @@ class EnhancedReportGenerator:
         if len(df) == 0:
             return {'emotion_distribution': {}, 'top_keywords': [], 'public_demands': []}
 
-        # 合并所有内容（优先使用“警示理由/ reason”）
-        if '警示理由' in df.columns:
+        # 合并所有内容（优先使用标题+正文，避免关键词被“AI理由模板词”污染）
+        if '内容' in df.columns or '标题' in df.columns:
+            all_content = ' '.join(df.get('标题', pd.Series()).fillna('') + ' ' + df.get('内容', pd.Series()).fillna(''))
+            if not all_content.strip() and '警示理由' in df.columns:
+                all_content = ' '.join(df['警示理由'].fillna(''))
+        elif '警示理由' in df.columns:
             all_content = ' '.join(df['警示理由'].fillna(''))
         else:
-            all_content = ' '.join(df['内容'].fillna('') + ' ' + df['标题'].fillna(''))
+            all_content = ""
 
         # 情感统计
         emotion_counts = Counter()
@@ -955,6 +1019,10 @@ class EnhancedReportGenerator:
 
     def _generate_recommendations_enhanced(self, df: pd.DataFrame) -> Dict[str, Any]:
         """生成应对建议（增强版）"""
+        ai_recs = self._generate_ai_recommendations(df)
+        if ai_recs:
+            return ai_recs
+
         avg_risk = df['风险分_数值'].mean() if len(df) > 0 else 0
 
         immediate = []
@@ -1016,8 +1084,142 @@ class EnhancedReportGenerator:
             'short_term_actions': short_term,
             'long_term_actions': long_term,
             'prevention': prevention,
-            'monitoring': monitoring
+            'monitoring': monitoring,
+            'generation_source': 'rule',
+            'ai_summary': ''
         }
+
+    def _generate_ai_recommendations(self, df: pd.DataFrame) -> Optional[Dict[str, Any]]:
+        """调用AI生成处置建议，失败时返回None并由规则回退。"""
+        if df is None or len(df) == 0:
+            return None
+
+        api_key = (self.ai_config.get("api_key") or "").strip()
+        api_url = (self.ai_config.get("api_url") or "").strip()
+        model = (self.ai_config.get("model") or "").strip()
+        if not api_key or not api_url or not model:
+            return None
+
+        sample_df = df.copy()
+        if '风险分_数值' in sample_df.columns:
+            sample_df = sample_df.sort_values(by=['风险分_数值', '创建时间_解析'], ascending=[False, False], na_position='last')
+        sample_df = sample_df.head(25)
+
+        lines = []
+        for idx, row in enumerate(sample_df.itertuples(index=False), 1):
+            title = (getattr(row, '标题', '') or '无标题').replace('\n', ' ').strip()
+            source = (getattr(row, '来源_标准', '') or getattr(row, '来源', '') or '未知').strip()
+            risk = int(getattr(row, '风险分_数值', 0) or 0)
+            created = (getattr(row, '时间_字符串', '') or str(getattr(row, '创建时间', '') or '')[:19]).strip()
+            reason = (getattr(row, '警示理由', '') or '').replace('\n', ' ').strip()
+            content = (getattr(row, '内容', '') or '').replace('\n', ' ').strip()
+            url = (getattr(row, '原文链接', '') or '').strip()
+            body = content[:160] if content else reason[:160]
+            lines.append(
+                f"{idx}. 时间:{created} 平台:{source} 风险:{risk} 标题:{title} 摘要:{body} 链接:{url or '无'}"
+            )
+
+        hospital_name = str(sample_df.get('医院', pd.Series()).iloc[0] if '医院' in sample_df.columns and len(sample_df) > 0 else "该医院")
+        total_events = int(len(df))
+        high_risk = int(len(df[df['严重程度'] == 'high'])) if '严重程度' in df.columns else 0
+
+        user_prompt = (
+            f"你是医院舆情处置专家。请基于以下舆情为{hospital_name}输出可执行处置建议。\n"
+            f"数据概览：总条数{total_events}，高风险{high_risk}。\n"
+            "要求：\n"
+            "1) 仅输出JSON，不要Markdown。\n"
+            "2) 字段必须包含：\n"
+            "{\n"
+            "  \"ai_summary\": \"一句话总体判断(<=80字)\",\n"
+            "  \"key_risks\": [\"风险点1\", \"风险点2\", \"风险点3\"],\n"
+            "  \"immediate_actions\": [\"24小时内动作...\"],\n"
+            "  \"short_term_actions\": [\"72小时内动作...\"],\n"
+            "  \"long_term_actions\": [\"一月内机制动作...\"]\n"
+            "}\n"
+            "3) 每个数组3-6条，避免空泛话术，尽量具体到责任动作。\n\n"
+            "舆情样本：\n" + "\n".join(lines)
+        )
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        }
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "你是专业的医疗舆情应对顾问。"},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": float(self.ai_config.get("temperature", 0.3)),
+            "max_tokens": int(self.ai_config.get("max_tokens", 800)),
+        }
+
+        try:
+            resp = requests.post(
+                api_url,
+                headers=headers,
+                json=payload,
+                timeout=int(self.ai_config.get("timeout", 45))
+            )
+            resp.raise_for_status()
+            result = resp.json()
+            content = result["choices"][0]["message"]["content"]
+            parsed = self._parse_ai_json(content)
+            if not parsed:
+                return None
+
+            immediate = self._to_clean_list(parsed.get("immediate_actions"))
+            short_term = self._to_clean_list(parsed.get("short_term_actions"))
+            long_term = self._to_clean_list(parsed.get("long_term_actions"))
+            key_risks = self._to_clean_list(parsed.get("key_risks"))
+            summary = str(parsed.get("ai_summary") or "").strip()
+            if not immediate and not short_term and not long_term:
+                return None
+
+            return {
+                "immediate_actions": immediate,
+                "short_term_actions": short_term,
+                "long_term_actions": long_term,
+                "prevention": {"short_term": [], "medium_term": []},
+                "monitoring": {
+                    "keywords": self._generate_monitoring_keywords(df),
+                    "platforms": list(df['来源_标准'].unique()) if '来源_标准' in df.columns else [],
+                    "frequency": "实时监测（7x24小时）",
+                },
+                "generation_source": "ai",
+                "ai_summary": summary,
+                "key_risks": key_risks
+            }
+        except Exception:
+            return None
+
+    def _parse_ai_json(self, text: str) -> Optional[Dict[str, Any]]:
+        """容错解析AI返回JSON。"""
+        if not text:
+            return None
+        raw = text.strip()
+        try:
+            return json.loads(raw)
+        except Exception:
+            pass
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return None
+        try:
+            return json.loads(raw[start:end + 1])
+        except Exception:
+            return None
+
+    def _to_clean_list(self, value: Any) -> List[str]:
+        if not isinstance(value, list):
+            return []
+        out = []
+        for item in value:
+            s = str(item or "").strip()
+            if s:
+                out.append(s)
+        return out
 
     def _generate_monitoring_keywords(self, df: pd.DataFrame) -> List[str]:
         """生成监测关键词"""
@@ -1200,49 +1402,166 @@ class EnhancedReportGenerator:
         return path[:50]  # 最多显示50条
 
     def generate_markdown_report(self, report_data: Dict[str, Any]) -> str:
-        """生成Markdown格式报告"""
+        """生成Markdown格式报告（实战简报版）"""
         lines = []
-
-        # 报告标题
-        lines.append(f"# {report_data['hospital_name']}负面舆情专项分析报告\n")
-        lines.append(f"**报告周期：** {report_data['report_date_range']}")
-        lines.append(f"**报告时间：** {report_data['report_date']}")
-        lines.append(f"**报告类型：** 舆情专项报告\n")
+        lines.append(f"# {report_data['hospital_name']}舆情处置简报\n")
+        lines.append(f"**统计周期：** {report_data['report_date_range']}")
+        lines.append(f"**生成时间：** {report_data['generated_time']}")
         lines.append("---\n")
 
-        # 一、报告概述
-        lines.extend(self._format_summary_section(report_data))
+        lines.extend(self._format_exec_summary_section(report_data))
+        lines.extend(self._format_top_events_section(report_data))
+        lines.extend(self._format_spread_snapshot_section(report_data))
+        lines.extend(self._format_keyword_cloud_section(report_data))
+        lines.extend(self._format_action_plan_section(report_data))
+        lines.extend(self._format_compact_appendix_section(report_data))
 
-        # 二、舆情分布分析
-        lines.extend(self._format_distribution_section(report_data))
-
-        # 三、重点负面事件详析
-        lines.extend(self._format_key_events_section(report_data))
-
-        # 四、情感分析与公众关切
-        lines.extend(self._format_sentiment_section(report_data))
-
-        # 五、风险预警与评估
-        lines.extend(self._format_risk_section(report_data))
-
-        # 六、应对措施与处置情况
-        lines.extend(self._format_recommendations_section(report_data))
-
-        # 七、影响预测
-        lines.extend(self._format_impact_section(report_data))
-
-        # 八、官方声明模板
-        lines.extend(self._format_templates_section(report_data))
-
-        # 九、附录
-        lines.extend(self._format_appendix_section(report_data))
-
-        # 报告结束
-        lines.append("\n## 报告结束\n")
-        lines.append(f"**报告生成时间：** {report_data['generated_time']}")
-        lines.append("**报告有效期：** 立即更新（建议每日更新）\n")
-
+        lines.append("\n---")
+        lines.append("\n> 注：本简报用于快速决策，建议配合原文链接进行人工复核。\n")
         return '\n'.join(lines)
+
+    def _format_exec_summary_section(self, data: Dict[str, Any]) -> List[str]:
+        lines = []
+        summary = data.get('summary', {})
+        overview = data.get('overview', {})
+        platforms = list((overview.get('platform_distribution') or {}).keys())
+        lines.append("## 一、核心结论（先看这里）\n")
+        lines.append(f"- 当前风险等级：**{summary.get('danger_level', '未知')}**")
+        lines.append(f"- 负面舆情：**{summary.get('total_events', 0)}** 条，其中高危 **{summary.get('high_risk_events', 0)}** 条")
+        lines.append(f"- 传播峰值：**{summary.get('peak_time', '未知')}**；趋势：**{summary.get('trend', '未知')}**")
+        if platforms:
+            lines.append(f"- 主要平台：**{', '.join(platforms[:3])}**")
+        lines.append("")
+        return lines
+
+    def _format_top_events_section(self, data: Dict[str, Any]) -> List[str]:
+        lines = []
+        df = data.get('raw_dataframe', pd.DataFrame())
+        if df is None or len(df) == 0:
+            return lines
+        lines.append("## 二、重点事件 Top 10（按风险与时间排序）\n")
+        work = df.copy()
+        work['风险分_数值'] = pd.to_numeric(work.get('风险分_数值', 0), errors='coerce').fillna(0)
+        work = work.sort_values(by=['风险分_数值', '创建时间_解析'], ascending=[False, False], na_position='last')
+        topn = work.head(10)
+        lines.append("| 序号 | 标题 | 来源 | 风险分 | 关键判断 | 原文 |")
+        lines.append("|---|---|---|---:|---|---|")
+        for idx, row in enumerate(topn.itertuples(index=False), 1):
+            title = getattr(row, '标题', '') or '无标题'
+            source = getattr(row, '来源_标准', '') or getattr(row, '来源', '') or '未知'
+            score = int(getattr(row, '风险分_数值', 0) or 0)
+            reason = (getattr(row, '警示理由', '') or '').replace('\n', ' ').strip()
+            reason = reason[:40] + ('...' if len(reason) > 40 else '')
+            url = getattr(row, '原文链接', '') or ''
+            url_col = f"[查看]({url})" if url else "无"
+            lines.append(f"| {idx} | {title[:40]}{'...' if len(title)>40 else ''} | {source} | {score} | {reason or '无'} | {url_col} |")
+        lines.append("")
+        return lines
+
+    def _format_spread_snapshot_section(self, data: Dict[str, Any]) -> List[str]:
+        lines = []
+        dist = data.get('distribution', {})
+        lines.append("## 三、传播快照\n")
+        time_dist = dist.get('time_distribution', {}) or {}
+        peak_hours = time_dist.get('peak_hours', [])[:3]
+        if peak_hours:
+            peak_text = "、".join([f"{h.get('hour', 0):02d}:00({h.get('count', 0)}条)" for h in peak_hours])
+            lines.append(f"- 峰值时段：{peak_text}")
+        pattern = time_dist.get('time_pattern')
+        if pattern:
+            lines.append(f"- 时间规律：{pattern}")
+        p_dist = (dist.get('platform_distribution', {}) or {}).get('distribution', {}) or {}
+        if p_dist:
+            top_p = sorted(p_dist.items(), key=lambda kv: kv[1].get('count', 0), reverse=True)[:5]
+            lines.append("- 平台分布：")
+            for name, info in top_p:
+                lines.append(f"  - {name}：{info.get('count', 0)}条（{info.get('percentage', 0)}%）")
+        lines.append("")
+        return lines
+
+    def _format_action_plan_section(self, data: Dict[str, Any]) -> List[str]:
+        lines = []
+        recs = data.get('recommendations', {}) or {}
+        lines.append("## 五、处置动作（可执行）\n")
+        ai_summary = (recs.get('ai_summary') or '').strip()
+        if ai_summary:
+            lines.append(f"- AI判断：{ai_summary}")
+        key_risks = recs.get('key_risks', []) or []
+        if key_risks:
+            lines.append(f"- 重点风险：{'；'.join([str(x) for x in key_risks[:3]])}")
+        immediate = recs.get('immediate_actions', [])[:5]
+        short_term = recs.get('short_term_actions', [])[:5]
+        long_term = recs.get('long_term_actions', [])[:5]
+        if immediate:
+            lines.append("### 24小时内")
+            for item in immediate:
+                lines.append(f"- {item}")
+        if short_term:
+            lines.append("\n### 72小时内")
+            for item in short_term:
+                lines.append(f"- {item}")
+        lines.append("\n### 本周内")
+        if long_term:
+            for item in long_term:
+                lines.append(f"- {item}")
+        else:
+            lines.append("- 复核 Top 10 事件原文，标记误报并沉淀规则")
+            lines.append("- 对高频平台（如抖音）建立重点监控词与人工复查机制")
+        lines.append("")
+        return lines
+
+    def _format_keyword_cloud_section(self, data: Dict[str, Any]) -> List[str]:
+        lines = []
+        sentiment = data.get('sentiment', {}) or {}
+        image = sentiment.get('wordcloud_image')
+        keywords = sentiment.get('top_keywords', []) or []
+
+        lines.append("## 四、关键词云与高频词\n")
+        lines.append("### 4.1 关键词云图\n")
+        if image:
+            lines.append(f"![关键词云图]({image})\n")
+        else:
+            lines.append("- 关键词云图：本次未生成（可能缺少可用关键词或字体环境）\n")
+
+        lines.append("### 4.2 高频词 Top 15\n")
+        if keywords:
+            for item in keywords[:15]:
+                if isinstance(item, dict):
+                    kw = item.get('keyword', '')
+                    cnt = item.get('count', 0)
+                else:
+                    try:
+                        kw, cnt = item
+                    except Exception:
+                        continue
+                if not kw:
+                    continue
+                lines.append(f"- {kw}（{cnt}次）")
+        else:
+            lines.append("- 无可用高频词")
+        lines.append("")
+        return lines
+
+    def _format_compact_appendix_section(self, data: Dict[str, Any]) -> List[str]:
+        lines = []
+        appendix = data.get('appendix', {}) or {}
+        event_list = appendix.get('event_list', [])[:20]
+        lines.append("## 六、附录（事件清单）\n")
+        if not event_list:
+            lines.append("- 无")
+            lines.append("")
+            return lines
+        lines.append("| 时间 | 平台 | 风险分 | 状态 | 标题 |")
+        lines.append("|---|---|---:|---|---|")
+        for event in event_list:
+            t = (event.get('time') or '')[:16]
+            p = event.get('platform') or '未知'
+            s = event.get('risk_score') or 0
+            st = event.get('status') or 'unknown'
+            title = event.get('title') or '无标题'
+            lines.append(f"| {t} | {p} | {s} | {st} | {title[:50]} |")
+        lines.append("")
+        return lines
 
     def generate_word_report(self, report_data: Dict[str, Any], output_path: str) -> None:
         """生成Word格式报告（基于Markdown渲染为简化版排版）"""
@@ -1340,6 +1659,7 @@ class EnhancedReportGenerator:
         """格式化概述部分"""
         lines = []
         summary = data['summary']
+        scope = data.get('data_scope', {}) or {}
 
         lines.append("## 一、报告概述\n")
         lines.append("### 1.1 舆情总体态势\n")
@@ -1355,7 +1675,19 @@ class EnhancedReportGenerator:
         lines.append(f"| **涉及平台** | {summary['platforms']}个 | {', '.join(list(data.get('overview', {}).get('platform_distribution', {}).keys())[:3])} |")
         lines.append(f"| **平均风险分** | {summary['average_risk_score']}分 | 满分100分 |\n")
 
-        lines.append("### 1.3 环比变化\n")
+        if scope:
+            include_dismissed = "是" if scope.get("include_dismissed") else "否"
+            dedupe_by_event = "是" if scope.get("dedupe_by_event") else "否"
+            lines.append("### 1.3 数据口径\n")
+            lines.append("| 口径项 | 值 |")
+            lines.append("|------|----|")
+            lines.append(f"| 包含误报数据 | {include_dismissed} |")
+            lines.append(f"| 按事件归并去重 | {dedupe_by_event} |")
+            lines.append(f"| 原始记录数 | {scope.get('raw_count', summary['total_events'])} |")
+            lines.append(f"| 报告纳入数 | {scope.get('included_count', summary['total_events'])} |")
+            lines.append(f"| 去重/过滤数 | {scope.get('excluded_count', 0)} |\n")
+
+        lines.append("### 1.4 环比变化\n")
         lines.append(f"- {summary['trend']}\n")
         lines.append("---\n")
 

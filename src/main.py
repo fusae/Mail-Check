@@ -13,7 +13,6 @@ import re
 import hashlib
 from collections import Counter
 from datetime import datetime, timedelta
-from urllib.parse import urlparse, parse_qs
 import db
 
 # 添加src目录到路径
@@ -82,21 +81,10 @@ class SentimentMonitor:
 
     def _event_dedupe_config(self):
         cfg = (self.config.get("runtime", {}) or {}).get("event_dedupe", {}) or {}
-        ai_cfg = (cfg.get("ai_referee", {}) or {})
         return {
             "enabled": bool(cfg.get("enabled", True)),
             "window_days": int(cfg.get("window_days", 7)),
             "max_distance": int(cfg.get("max_distance", 4)),
-            # Optional AI referee:
-            # - Only used for "grey zone" soft matches; hard URL matches don't need it.
-            # - Default dist_min=1 so exact-title matches (distance=0) don't incur extra AI calls.
-            "ai_referee": {
-                "enabled": bool(ai_cfg.get("enabled", False)),
-                "dist_min": int(ai_cfg.get("dist_min", 1)),
-                "dist_max": int(ai_cfg.get("dist_max", 4)),
-                # If AI is unavailable, merge anyway when rules say it's duplicate.
-                "fail_open": bool(ai_cfg.get("fail_open", True)),
-            },
         }
 
     def _tokenize_for_simhash(self, text: str):
@@ -128,105 +116,33 @@ class SentimentMonitor:
     def _hamming_distance(self, a: int, b: int) -> int:
         return bin(a ^ b).count("1")
 
-    def _normalize_event_url(self, url: str, source: str = "") -> str:
-        """
-        Normalize platform URLs for dedupe.
-        Goal: the same underlying content should map to the same key even if tracking params differ.
-        """
-        url = (url or "").strip()
-        if not url:
-            return ""
-
-        src = (source or "").strip()
-        u = url
-
-        try:
-            parsed = urlparse(url)
-        except Exception:
-            parsed = None
-
-        host = (parsed.netloc.lower() if parsed else "")
-        path = (parsed.path if parsed else "")
-        qs = (parse_qs(parsed.query) if parsed else {})
-
-        # Douyin: prefer stable video id
-        if src == "抖音" or "douyin.com" in host or "douyin.com" in u:
-            m = re.search(r"/video/(\d+)", u)
-            if not m:
-                m = re.search(r"/share/video/(\d+)", u)
-            if not m:
-                # Some share links use modal_id
-                modal = qs.get("modal_id", [])
-                if modal and isinstance(modal[0], str) and modal[0].isdigit():
-                    return f"douyin:{modal[0]}"
-            if m:
-                return f"douyin:{m.group(1)}"
-
-        # Xiaohongshu: prefer note id if available
-        if src == "小红书" or "xiaohongshu.com" in host or "xhslink.com" in host:
-            m = re.search(r"/explore/([0-9a-fA-F]+)", u)
-            if m:
-                return f"xhs:{m.group(1).lower()}"
-            note_id = (qs.get("noteId") or qs.get("note_id") or qs.get("id") or [""])[0]
-            if isinstance(note_id, str) and note_id:
-                return f"xhs:{note_id.lower()}"
-
-        # Generic: remove fragment; keep scheme+host+path; keep a small stable subset of query params.
-        scheme = (parsed.scheme.lower() if parsed and parsed.scheme else "http")
-        stable_keys = ["id", "mid", "tid", "sid", "video_id", "noteId", "note_id"]
-        stable_parts = []
-        for k in stable_keys:
-            if k in qs and qs[k]:
-                stable_parts.append(f"{k}={qs[k][0]}")
-        stable_q = ("?" + "&".join(stable_parts)) if stable_parts else ""
-        if host:
-            return f"{scheme}://{host}{path}{stable_q}"
-        return url
-
     def _match_or_create_event(self, sentiment, hospital_name, analysis):
         cfg = self._event_dedupe_config()
         if not cfg["enabled"]:
             return None, False, None
 
-        raw_url = (sentiment.get("url") or "").strip()
-        source = sentiment.get("webName", "") or ""
-        norm_url = self._normalize_event_url(raw_url, source)
-        # Use normalized key for matching/storing. Keep raw_url separately for UI/linking.
-        url = norm_url or raw_url
+        url = (sentiment.get("url") or "").strip()
         now = self._now_local_str()
         window_start = (datetime.now() - timedelta(days=cfg["window_days"]))\
             .strftime("%Y-%m-%d %H:%M:%S")
 
         title = sentiment.get("title", "") or ""
         reason = analysis.get("reason", "") or ""
+        source = sentiment.get("webName", "") or ""
         sentiment_id = sentiment.get("id", "") or ""
 
         # 硬匹配：URL 相同
-        # Backward compat: old rows may have stored raw_url; match both.
-        if url or raw_url:
-            keys = []
-            if url:
-                keys.append(url)
-            if raw_url and raw_url not in keys:
-                keys.append(raw_url)
-
-            if len(keys) == 1:
-                where = "event_url = ?"
-                params = (hospital_name, keys[0])
-            else:
-                where = "(event_url = ? OR event_url = ?)"
-                params = (hospital_name, keys[0], keys[1])
-
+        if url:
             row = db.execute(
                 self.project_root,
-                f"""
+                """
                 SELECT id, total_count, event_url
                 FROM event_groups
-                WHERE hospital_name = ? AND {where}
+                WHERE hospital_name = ? AND event_url = ?
                 ORDER BY last_seen_at DESC
                 LIMIT 1
                 """,
-                params,
+                (hospital_name, url),
                 fetchone=True
             )
             if row:
@@ -245,36 +161,18 @@ class SentimentMonitor:
                     """,
                     (now, title, reason, source, sentiment_id, row["id"])
                 )
-                # Prefer normalized key for future matches.
-                if url and row.get("event_url") != url:
-                    db.execute(
-                        self.project_root,
-                        "UPDATE event_groups SET event_url = ? WHERE id = ?",
-                        (url, row["id"]),
-                    )
                 return row["id"], True, total_count
 
         # 软匹配：SimHash + 时间窗 + 同医院
-        #
-        # 采用“标题 + AI理由”做指纹，标题为空时兜底正文，避免指纹为 0。
-        title_fp = re.sub(r"\s+", " ", (title or "")).strip()
-        reason_fp = re.sub(r"\s+", " ", (reason or "")).strip()
-        if len(reason_fp) > 200:
-            reason_fp = reason_fp[:200]
-        text = " ".join(part for part in [title_fp, reason_fp] if part).strip()
+        text = f"{title} {reason}".strip()
         if not text:
-            content_main = (sentiment.get("allContent") or sentiment.get("content") or "").strip()
-            ocr_main = (sentiment.get("ocrData") or "").strip()
-            body = content_main if len(content_main) >= len(ocr_main) else ocr_main
-            if len(body) > 400:
-                body = body[:400]
-            text = re.sub(r"\s+", " ", body).strip()
+            text = title or reason
 
         fingerprint = self._compute_simhash(text)
         candidates = db.execute(
             self.project_root,
             """
-            SELECT id, fingerprint, total_count, event_url, last_title, last_reason, last_source
+            SELECT id, fingerprint, total_count, event_url
             FROM event_groups
             WHERE hospital_name = ? AND last_seen_at >= ?
             """,
@@ -293,55 +191,7 @@ class SentimentMonitor:
                 best_dist = dist
                 best_row = row
 
-        should_merge = False
-        if best_row:
-            max_distance = cfg["max_distance"]
-            rule_hit = best_dist <= max_distance
-
-            # Optional AI referee (grey zone): can veto rule match and can rescue close non-rule match.
-            ai_cfg = cfg.get("ai_referee", {}) or {}
-            ai_enabled = bool(ai_cfg.get("enabled"))
-            dist_min = int(ai_cfg.get("dist_min", 1))
-            dist_max = int(ai_cfg.get("dist_max", max_distance))
-            fail_open = bool(ai_cfg.get("fail_open", True))
-            in_ai_window = ai_enabled and dist_min <= best_dist <= dist_max
-
-            should_merge = rule_hit
-            if in_ai_window:
-                try:
-                    judge = getattr(self, "sentiment_analyzer", None)
-                    judge_fn = getattr(judge, "judge_same_event", None)
-                    if callable(judge_fn):
-                        a = {
-                            "source": source,
-                            "title": title,
-                            "reason": reason,
-                            "url": raw_url or url,
-                        }
-                        b = {
-                            "source": best_row.get("last_source") or "",
-                            "title": best_row.get("last_title") or "",
-                            "reason": best_row.get("last_reason") or "",
-                            "url": best_row.get("event_url") or "",
-                        }
-                        ai_res = judge_fn(hospital_name, a, b)
-                        if isinstance(ai_res, dict):
-                            same_event = ai_res.get("same_event")
-                            if same_event is True:
-                                should_merge = True
-                            elif same_event is False:
-                                should_merge = False
-                            elif not rule_hit:
-                                # Non-rule match with unknown AI output.
-                                should_merge = fail_open
-                        elif not rule_hit:
-                            should_merge = fail_open
-                except Exception as e:
-                    self.logger.warning(f"AI事件判重失败（dist={best_dist}）：{e}")
-                    if not rule_hit:
-                        should_merge = fail_open
-
-        if best_row and should_merge:
+        if best_row and best_dist <= cfg["max_distance"]:
             total_count = (best_row.get("total_count") or 0) + 1
             db.execute(
                 self.project_root,

@@ -21,6 +21,26 @@ try:
 except ImportError:
     WORDCLOUD_AVAILABLE = False
 
+
+_ENHANCED_GENERATOR_CLS = None
+
+
+def _load_enhanced_generator_cls():
+    """延迟加载增强版报告生成器，避免每次请求重复修改sys.path。"""
+    global _ENHANCED_GENERATOR_CLS
+    if _ENHANCED_GENERATOR_CLS is not None:
+        return _ENHANCED_GENERATOR_CLS
+
+    import sys
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    if current_dir not in sys.path:
+        sys.path.insert(0, current_dir)
+
+    from report_generator_enhanced import EnhancedReportGenerator
+    _ENHANCED_GENERATOR_CLS = EnhancedReportGenerator
+    return _ENHANCED_GENERATOR_CLS
+
+
 class MailCheckReportGenerator:
     """Mail-Check舆情报告生成器（MySQL版）"""
 
@@ -56,7 +76,24 @@ class MailCheckReportGenerator:
         rows = cursor.fetchall()
         return rows
 
-    def fetch_all_data(self, start_date: str = None, end_date: str = None, hospital: str = None):
+    def _normalize_hospital_filter(self, hospital: Optional[str]) -> Optional[str]:
+        if not isinstance(hospital, str):
+            return hospital
+        cleaned = hospital.strip()
+        if cleaned in ("all", "全部", "全院汇总", "all hospitals"):
+            return None
+        return cleaned or None
+
+    def fetch_all_data(
+        self,
+        start_date: str = None,
+        end_date: str = None,
+        hospital: str = None,
+        include_dismissed: bool = False,
+        dedupe_by_event: bool = True,
+        sentiment_ids: Optional[List[str]] = None,
+        record_ids: Optional[List[int]] = None
+    ):
         """
         获取所有负面舆情数据
 
@@ -64,15 +101,16 @@ class MailCheckReportGenerator:
             start_date: 开始日期 (YYYY-MM-DD)
             end_date: 结束日期 (YYYY-MM-DD)
             hospital: 医院名称（可选，筛选特定医院）
+            include_dismissed: 是否包含已标记误报的数据
+            dedupe_by_event: 是否按事件归并去重（同事件仅保留最高风险且最新一条）
+            sentiment_ids: 指定纳入报告的舆情ID列表（可选）
+            record_ids: 指定纳入报告的数据库记录ID列表（可选，优先精确筛选）
 
         Returns:
             DataFrame: 舆情数据
         """
         # 清洗筛选参数
-        if isinstance(hospital, str):
-            hospital = hospital.strip()
-            if hospital in ("all", "全部", "全院汇总", "all hospitals"):
-                hospital = None
+        hospital = self._normalize_hospital_filter(hospital)
 
         if isinstance(start_date, str) and len(start_date) >= 10:
             start_date = start_date[:10]
@@ -83,6 +121,7 @@ class MailCheckReportGenerator:
         sql = """
             SELECT
                 sentiment_id as ID,
+                id as 记录ID,
                 hospital_name as 医院,
                 title as 标题,
                 source as 来源,
@@ -91,7 +130,9 @@ class MailCheckReportGenerator:
                 reason as 警示理由,
                 content as 内容,
                 url as 原文链接,
-                status as 状态
+                status as 状态,
+                event_id as 事件ID,
+                is_duplicate as 重复事件
             FROM negative_sentiments
             WHERE 1=1
         """
@@ -110,6 +151,32 @@ class MailCheckReportGenerator:
             sql += " AND hospital_name = ?"
             params.append(hospital)
 
+        if record_ids is not None:
+            clean_record_ids = []
+            for rid in record_ids:
+                try:
+                    clean_record_ids.append(int(rid))
+                except Exception:
+                    continue
+            if not clean_record_ids:
+                return pd.DataFrame()
+            placeholders = ",".join(["?"] * len(clean_record_ids))
+            sql += f" AND id IN ({placeholders})"
+            params.extend(clean_record_ids)
+
+        # 勾选导出：只纳入用户选中的舆情
+        if sentiment_ids is not None:
+            clean_ids = [str(sid).strip() for sid in sentiment_ids if str(sid).strip()]
+            if not clean_ids:
+                return pd.DataFrame()
+            placeholders = ",".join(["?"] * len(clean_ids))
+            sql += f" AND sentiment_id IN ({placeholders})"
+            params.extend(clean_ids)
+
+        # 默认排除已误报项，让报告聚焦“待处置”舆情
+        if not include_dismissed:
+            sql += " AND COALESCE(NULLIF(status, ''), 'active') != 'dismissed'"
+
         sql += " ORDER BY processed_at DESC"
 
         # 执行查询
@@ -120,6 +187,7 @@ class MailCheckReportGenerator:
         for row in rows:
             data.append({
                 'ID': row['ID'],
+                '记录ID': row.get('记录ID'),
                 '医院': row['医院'],
                 '标题': row['标题'],
                 '来源': row['来源'],
@@ -128,7 +196,9 @@ class MailCheckReportGenerator:
                 '警示理由': row['警示理由'],
                 '内容': row['内容'],
                 '原文链接': row['原文链接'],
-                '状态': row['状态'] or 'active'
+                '状态': row['状态'] or 'active',
+                '事件ID': row.get('事件ID'),
+                '重复事件': int(row.get('重复事件') or 0)
             })
 
         df = pd.DataFrame(data)
@@ -142,7 +212,33 @@ class MailCheckReportGenerator:
                 lambda x: 100 if x == 'high' else 60 if x == 'medium' else 30
             )
 
+        if dedupe_by_event:
+            df = self._dedupe_event_rows(df)
+
         return df
+
+    def _dedupe_event_rows(self, df: pd.DataFrame) -> pd.DataFrame:
+        """按事件归并去重：同事件保留最高风险、最新创建时间的一条。"""
+        if df.empty:
+            return df
+
+        df = df.copy()
+        df['创建时间_解析'] = pd.to_datetime(df['创建时间'], errors='coerce')
+        df['事件键'] = df['事件ID'].apply(
+            lambda x: f"event:{int(x)}" if pd.notna(x) else None
+        )
+        df['事件键'] = df['事件键'].fillna(df['ID'].apply(lambda x: f"item:{x}"))
+
+        # 排序优先级：风险分高 -> 时间新
+        df = df.sort_values(
+            by=['风险分', '创建时间_解析'],
+            ascending=[False, False],
+            na_position='last'
+        )
+        deduped = df.drop_duplicates(subset=['事件键'], keep='first').copy()
+        deduped = deduped.sort_values(by='创建时间_解析', ascending=False, na_position='last')
+
+        return deduped.drop(columns=['创建时间_解析', '事件键'], errors='ignore')
 
     def generate_report(
         self,
@@ -150,7 +246,11 @@ class MailCheckReportGenerator:
         end_date: str = None,
         hospital: str = None,
         report_period: str = None,
-        output_format: str = 'markdown'
+        output_format: str = 'markdown',
+        include_dismissed: bool = False,
+        dedupe_by_event: bool = True,
+        sentiment_ids: Optional[List[str]] = None,
+        record_ids: Optional[List[int]] = None
     ):
         """
         生成舆情报告
@@ -161,31 +261,39 @@ class MailCheckReportGenerator:
             hospital: 医院名称
             report_period: 报告周期（如"2026年第一季度"）
             output_format: 输出格式（markdown/word）
+            include_dismissed: 是否包含已误报数据
+            dedupe_by_event: 是否按事件归并去重
+            sentiment_ids: 仅纳入指定舆情ID
+            record_ids: 仅纳入指定数据库记录ID
 
         Returns:
             dict: 包含报告数据和文件路径
         """
         print(f"[INFO] 正在获取数据...")
-        df = self.fetch_all_data(start_date, end_date, hospital)
-
-        if len(df) == 0:
+        hospital_filter = self._normalize_hospital_filter(hospital)
+        raw_df = self.fetch_all_data(
+            start_date=start_date,
+            end_date=end_date,
+            hospital=hospital_filter,
+            include_dismissed=include_dismissed,
+            dedupe_by_event=False,
+            sentiment_ids=sentiment_ids,
+            record_ids=record_ids
+        )
+        if len(raw_df) == 0:
             print("[WARN] 没有找到符合条件的数据")
             return {
                 'success': False,
                 'message': '没有数据'
             }
+        df = self._dedupe_event_rows(raw_df) if dedupe_by_event else raw_df
 
-        print(f"[INFO] 获取到 {len(df)} 条舆情数据")
+        print(f"[INFO] 获取到 {len(raw_df)} 条舆情数据，报告纳入 {len(df)} 条")
 
         # 导入增强版report_generator
         try:
-            import sys
-            # 添加src目录到路径
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            sys.path.insert(0, current_dir)
-
-            from report_generator_enhanced import EnhancedReportGenerator
-            gen = EnhancedReportGenerator()
+            enhanced_cls = _load_enhanced_generator_cls()
+            gen = enhanced_cls()
         except ImportError:
             print("[ERROR] 无法导入EnhancedReportGenerator，请确保report_generator_enhanced.py在src目录下")
             return {
@@ -193,9 +301,17 @@ class MailCheckReportGenerator:
                 'message': '缺少report_generator_enhanced模块'
             }
 
+        output_format = (output_format or 'markdown').strip().lower()
+        if output_format in ('md',):
+            output_format = 'markdown'
+        elif output_format in ('docx',):
+            output_format = 'word'
+        elif output_format not in ('markdown', 'word', 'both'):
+            output_format = 'markdown'
+
         # 确定医院名称
-        if hospital:
-            hospital_name = hospital
+        if hospital_filter:
+            hospital_name = hospital_filter
         elif len(df) > 0:
             # 如果只有一个医院，使用它；否则使用通用名称
             unique_hospitals = df['医院'].unique()
@@ -221,13 +337,21 @@ class MailCheckReportGenerator:
             report_type='special',
             report_period=report_period
         )
+        report_data['data_scope'] = {
+            'include_dismissed': include_dismissed,
+            'dedupe_by_event': dedupe_by_event,
+            'raw_count': int(len(raw_df)),
+            'included_count': int(len(df)),
+            'excluded_count': int(len(raw_df) - len(df))
+        }
 
         # 生成报告文件
         output_dir = Path(os.path.join(self.project_root, 'data', 'reports'))
-        output_dir.mkdir(exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
 
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = f"{hospital_name}_舆情报告_{timestamp}"
+        safe_hospital_name = ''.join(ch if ch.isalnum() or ch in ('-', '_') else '_' for ch in hospital_name)
+        filename = f"{safe_hospital_name}_舆情报告_{timestamp}"
 
         # 生成关键词云（可选）
         wordcloud_name = self._generate_wordcloud(report_data, output_dir, filename)
@@ -240,7 +364,11 @@ class MailCheckReportGenerator:
             'hospital_name': hospital_name,
             'period': report_period,
             'total_events': len(df),
+            'raw_total_events': len(raw_df),
             'high_risk_events': len(df[df['严重程度'] == 'high']),
+            'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'data_scope': report_data.get('data_scope', {}),
+            'included_hospitals': sorted([str(x) for x in df['医院'].dropna().unique().tolist()]) if '医院' in df.columns else [],
             'files': {}
         }
 
@@ -344,7 +472,11 @@ class MailCheckReportGenerator:
                     continue
             if not key:
                 continue
-            freqs[str(key)] = int(count) if count else 1
+            key_text = str(key).replace('\n', ' ').replace('\r', ' ')
+            key_text = ' '.join(key_text.split()).strip()
+            if not key_text:
+                continue
+            freqs[key_text] = int(count) if count else 1
 
         if not freqs:
             return None
@@ -355,8 +487,7 @@ class MailCheckReportGenerator:
             height=800,
             background_color="white",
             colormap="viridis",
-            prefer_horizontal=1.0,
-            max_rotation=0
+            prefer_horizontal=1.0
         )
         wc.generate_from_frequencies(freqs)
 
@@ -432,6 +563,8 @@ def main():
     parser.add_argument('--period', help='报告周期（如"2026年第一季度"）')
     parser.add_argument('--format', default='markdown', choices=['markdown', 'word', 'both'], help='输出格式')
     parser.add_argument('--db', help='数据库路径（可选）')
+    parser.add_argument('--include-dismissed', action='store_true', help='包含已标记误报数据')
+    parser.add_argument('--no-dedupe', action='store_true', help='不按事件归并去重')
 
     args = parser.parse_args()
 
@@ -449,7 +582,9 @@ def main():
         end_date=args.end_date,
         hospital=args.hospital,
         report_period=args.period,
-        output_format=args.format
+        output_format=args.format,
+        include_dismissed=args.include_dismissed,
+        dedupe_by_event=not args.no_dedupe
     )
 
     print()

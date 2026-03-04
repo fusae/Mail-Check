@@ -9,9 +9,7 @@ import hashlib
 import hmac
 import logging
 import os
-import random
 import re
-import time
 import db
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -61,10 +59,19 @@ _default_cors_origins = [
     "http://localhost:10088",
     "http://127.0.0.1:10088",
 ]
-_cfg_origins = (config.get("runtime", {}) or {}).get("cors_origins") or []
-# Merge defaults + config to avoid config overriding dev origins accidentally.
-CORS_ORIGINS = sorted(set(_default_cors_origins + list(_cfg_origins)))
+CORS_ORIGINS = config.get("runtime", {}).get("cors_origins") or _default_cors_origins
 REPORTS_DIR = os.path.join(project_root, 'data', 'reports')
+
+
+def _normalize_report_format(raw_format: str) -> str:
+    fmt = (raw_format or "markdown").strip().lower()
+    if fmt == "md":
+        return "markdown"
+    if fmt == "docx":
+        return "word"
+    if fmt in ("markdown", "word", "both"):
+        return fmt
+    return "markdown"
 
 
 @app.after_request
@@ -102,9 +109,7 @@ def row_to_opinion(row, include_content=True, preview_len=240):
         truncated = len(content) > preview_len
     return {
         "id": row["sentiment_id"],
-        "event_id": row.get("event_id"),
-        "event_total": row.get("event_total"),
-        "is_duplicate": bool(row.get("is_duplicate") or 0),
+        "rowId": row.get("row_id"),
         "hospital": row["hospital_name"],
         "title": row["title"],
         "source": row["source"],
@@ -307,25 +312,11 @@ def list_opinions():
 
     rows = query_db(
         """
-        SELECT
-            ns.sentiment_id,
-            ns.event_id,
-            eg.total_count AS event_total,
-            ns.is_duplicate,
-            ns.hospital_name,
-            ns.title,
-            ns.source,
-            ns.content,
-            ns.reason,
-            ns.severity,
-            ns.url,
-            ns.status,
-            ns.dismissed_at,
-            ns.processed_at
-        FROM negative_sentiments ns
-        LEFT JOIN event_groups eg ON eg.id = ns.event_id
-        WHERE (? = 'all' OR COALESCE(NULLIF(ns.status, ''), 'active') = ?)
-        ORDER BY ns.processed_at DESC
+        SELECT id AS row_id, sentiment_id, hospital_name, title, source, content, reason,
+               severity, url, status, dismissed_at, processed_at
+        FROM negative_sentiments
+        WHERE (? = 'all' OR COALESCE(NULLIF(status, ''), 'active') = ?)
+        ORDER BY processed_at DESC
         LIMIT ? OFFSET ?
         """,
         (status, status, limit, offset),
@@ -543,24 +534,10 @@ def get_trend():
 def get_opinion(sentiment_id):
     row = query_db(
         """
-        SELECT
-            ns.sentiment_id,
-            ns.event_id,
-            eg.total_count AS event_total,
-            ns.is_duplicate,
-            ns.hospital_name,
-            ns.title,
-            ns.source,
-            ns.content,
-            ns.reason,
-            ns.severity,
-            ns.url,
-            ns.status,
-            ns.dismissed_at,
-            ns.processed_at
-        FROM negative_sentiments ns
-        LEFT JOIN event_groups eg ON eg.id = ns.event_id
-        WHERE ns.sentiment_id = ?
+        SELECT id AS row_id, sentiment_id, hospital_name, title, source, content, reason,
+               severity, url, status, dismissed_at, processed_at
+        FROM negative_sentiments
+        WHERE sentiment_id = ?
         """,
         (sentiment_id,),
         fetchone=True,
@@ -584,25 +561,11 @@ def search_opinions():
     like = f"%{query}%"
     rows = query_db(
         """
-        SELECT
-            ns.sentiment_id,
-            ns.event_id,
-            eg.total_count AS event_total,
-            ns.is_duplicate,
-            ns.hospital_name,
-            ns.title,
-            ns.source,
-            ns.content,
-            ns.reason,
-            ns.severity,
-            ns.url,
-            ns.status,
-            ns.dismissed_at,
-            ns.processed_at
-        FROM negative_sentiments ns
-        LEFT JOIN event_groups eg ON eg.id = ns.event_id
-        WHERE ns.hospital_name LIKE ? OR ns.title LIKE ? OR ns.content LIKE ? OR ns.source LIKE ?
-        ORDER BY ns.processed_at DESC
+        SELECT id AS row_id, sentiment_id, hospital_name, title, source, content, reason,
+               severity, url, status, dismissed_at, processed_at
+        FROM negative_sentiments
+        WHERE hospital_name LIKE ? OR title LIKE ? OR content LIKE ? OR source LIKE ?
+        ORDER BY processed_at DESC
         LIMIT ? OFFSET ?
         """,
         (like, like, like, like, limit, offset),
@@ -630,46 +593,19 @@ def call_ai(prompt):
 
     api_url = ai_config.get("api_url")
     timeout = ai_config.get("timeout", 60)
-    # Retry policy: keep backward compat with max_retries, but add exponential backoff
-    # and only retry on transient failures.
-    max_retries = int(ai_config.get("max_retries", 2))
-    max_attempts = max(1, max_retries + 1)
-    backoff_base = float(ai_config.get("retry_backoff_seconds", 1.0))
-    backoff_cap = float(ai_config.get("retry_backoff_max_seconds", 8.0))
-    retry_statuses = set(ai_config.get("retry_statuses", [429, 500, 502, 503, 504]))
-
+    max_retries = ai_config.get("max_retries", 2)
     last_exc = None
-    for attempt in range(1, max_attempts + 1):
+
+    for attempt in range(1, max_retries + 2):
         try:
             resp = requests.post(api_url, headers=headers, json=data, timeout=timeout)
-
-            if resp.status_code in retry_statuses and attempt < max_attempts:
-                retry_after = resp.headers.get("Retry-After")
-                sleep_s = min(backoff_cap, backoff_base * (2 ** (attempt - 1)))
-                if retry_after:
-                    try:
-                        sleep_s = min(backoff_cap, float(retry_after))
-                    except Exception:
-                        pass
-                # small jitter to avoid thundering herd
-                sleep_s = min(backoff_cap, sleep_s + random.random() * 0.25)
-                logging.warning(
-                    f"AI调用返回{resp.status_code}（第{attempt}次），等待{sleep_s:.1f}s后重试"
-                )
-                time.sleep(sleep_s)
-                continue
-
             resp.raise_for_status()
             result = resp.json()
             return result["choices"][0]["message"]["content"]
-        except requests.exceptions.RequestException as exc:
+        except Exception as exc:
             last_exc = exc
-            if attempt >= max_attempts:
-                break
-            sleep_s = min(backoff_cap, backoff_base * (2 ** (attempt - 1)))
-            sleep_s = min(backoff_cap, sleep_s + random.random() * 0.25)
-            logging.warning(f"AI调用失败（第{attempt}次）: {exc}，等待{sleep_s:.1f}s后重试")
-            time.sleep(sleep_s)
+            logging.warning(f"AI调用失败（第{attempt}次）: {exc}")
+            continue
 
     raise last_exc
 
@@ -828,32 +764,93 @@ def api_generate_report():
     """生成舆情报告（新报告生成器）"""
     try:
         data = request.get_json() or {}
+        start_at = datetime.now()
+
+        start_date = (data.get("start_date") or "").strip()
+        end_date = (data.get("end_date") or "").strip()
+        hospital = data.get("hospital")
+        output_format = _normalize_report_format(data.get("format", "markdown"))
+        include_dismissed = bool(data.get("include_dismissed", False))
+        dedupe_by_event = bool(data.get("dedupe_by_event", True))
+        raw_sentiment_ids = data.get("sentiment_ids")
+        sentiment_ids = None
+        if isinstance(raw_sentiment_ids, list):
+            sentiment_ids = []
+            for sid in raw_sentiment_ids:
+                text = str(sid).strip()
+                if text and text not in sentiment_ids:
+                    sentiment_ids.append(text)
+            if not sentiment_ids:
+                return jsonify({"success": False, "message": "请选择至少一条舆情"}), 400
+            if len(sentiment_ids) > 5000:
+                return jsonify({"success": False, "message": "单次最多选择 5000 条舆情"}), 400
+        raw_record_ids = data.get("record_ids")
+        record_ids = None
+        if isinstance(raw_record_ids, list):
+            record_ids = []
+            for rid in raw_record_ids:
+                try:
+                    value = int(rid)
+                except Exception:
+                    continue
+                if value not in record_ids:
+                    record_ids.append(value)
+            if raw_record_ids and not record_ids:
+                return jsonify({"success": False, "message": "勾选记录无效，请刷新后重试"}), 400
+            if record_ids and len(record_ids) > 5000:
+                return jsonify({"success": False, "message": "单次最多选择 5000 条记录"}), 400
+
+        if start_date and end_date and start_date > end_date:
+            return jsonify({"success": False, "message": "开始日期不能晚于结束日期"}), 400
 
         from report_generator_mailcheck import MailCheckReportGenerator
 
         generator = MailCheckReportGenerator()
         result = generator.generate_report(
-            start_date=data.get('start_date'),
-            end_date=data.get('end_date'),
-            hospital=data.get('hospital'),
+            start_date=start_date,
+            end_date=end_date,
+            hospital=hospital,
             report_period=data.get('period'),
-            output_format=data.get('format', 'markdown')
+            output_format=output_format,
+            include_dismissed=include_dismissed,
+            dedupe_by_event=dedupe_by_event,
+            sentiment_ids=sentiment_ids,
+            record_ids=record_ids
         )
 
         if result.get('success'):
             files = {}
-            for fmt, path in result.get('files', {}).items():
-                files[fmt] = f"/api/report/download/{os.path.basename(path)}"
+            file_meta = {}
+            for fmt, path in (result.get('files', {}) or {}).items():
+                filename = os.path.basename(path)
+                url = f"/api/report/download/{filename}"
+                files[fmt] = url
+                try:
+                    size = os.path.getsize(path)
+                except OSError:
+                    size = None
+                file_meta[fmt] = {
+                    "filename": filename,
+                    "download_url": url,
+                    "size": size,
+                }
+
+            elapsed_ms = int((datetime.now() - start_at).total_seconds() * 1000)
 
             return jsonify({
                 'success': True,
                 'message': '报告生成成功',
                 'files': files,
+                'file_meta': file_meta,
+                'elapsed_ms': elapsed_ms,
                 'summary': {
                     'hospital': result.get('hospital_name'),
                     'period': result.get('period'),
                     'total_events': result.get('total_events'),
+                    'raw_total_events': result.get('raw_total_events'),
                     'high_risk_events': result.get('high_risk_events'),
+                    'included_hospitals': result.get('included_hospitals', []),
+                    'data_scope': result.get('data_scope', {}),
                 }
             })
 
@@ -896,15 +893,21 @@ def api_list_reports():
             if os.path.isfile(file_path):
                 stat = os.stat(file_path)
                 file_ext = os.path.splitext(filename)[1].lower()
+                if file_ext not in ('.md', '.docx'):
+                    continue
                 fmt = 'word' if file_ext == '.docx' else 'markdown'
                 reports.append({
                     'filename': filename,
+                    'download_url': f"/api/report/download/{filename}",
                     'created_at': datetime.fromtimestamp(stat.st_ctime).strftime('%Y-%m-%d %H:%M:%S'),
+                    'created_ts': stat.st_ctime,
                     'size': stat.st_size,
                     'format': fmt,
                 })
 
-        reports.sort(key=lambda x: x['created_at'], reverse=True)
+        reports.sort(key=lambda x: x['created_ts'], reverse=True)
+        for item in reports:
+            item.pop('created_ts', None)
         return jsonify({'success': True, 'reports': reports[:50]})
 
     except Exception as e:

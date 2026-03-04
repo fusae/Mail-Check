@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Iterable, Tuple, Optional
+from typing import Any, Dict, Iterable, Tuple
 
 import yaml
 
@@ -19,32 +19,7 @@ except Exception:
     MYSQL_AVAILABLE = False
 
 
-def _resolve_project_root(start_path: str) -> str:
-    """
-    Accept either repo root or a subdir (e.g. src/) and find the repo root that contains
-    config/config.yaml. This prevents callers accidentally passing src/ and breaking config load.
-    """
-    if not start_path:
-        return os.getcwd()
-
-    cur = os.path.abspath(start_path)
-    if os.path.isfile(cur):
-        cur = os.path.dirname(cur)
-
-    for _ in range(8):
-        if os.path.isfile(os.path.join(cur, "config", "config.yaml")):
-            return cur
-        parent = os.path.dirname(cur)
-        if parent == cur:
-            break
-        cur = parent
-
-    # Fallback: keep original behavior.
-    return os.path.abspath(start_path)
-
-
 def load_config(project_root: str) -> Dict[str, Any]:
-    project_root = _resolve_project_root(project_root)
     config_path = os.path.join(project_root, "config", "config.yaml")
     with open(config_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
@@ -108,7 +83,6 @@ class _MysqlCompatConnection:
 
 
 def connect(project_root: str):
-    project_root = _resolve_project_root(project_root)
     config = load_config(project_root)
     engine = get_db_engine(config)
     if not MYSQL_AVAILABLE:
@@ -128,7 +102,6 @@ def connect(project_root: str):
 
 
 def execute(project_root: str, sql: str, params: Iterable[Any] = (), fetchone: bool = False, fetchall: bool = False):
-    project_root = _resolve_project_root(project_root)
     config = load_config(project_root)
     engine = get_db_engine(config)
     conn = connect(project_root)
@@ -147,8 +120,7 @@ def execute(project_root: str, sql: str, params: Iterable[Any] = (), fetchone: b
             pass
 
 
-def execute_with_lastrowid(project_root: str, sql: str, params: Iterable[Any] = ()) -> Optional[int]:
-    project_root = _resolve_project_root(project_root)
+def execute_with_lastrowid(project_root: str, sql: str, params: Iterable[Any] = ()) -> int | None:
     config = load_config(project_root)
     engine = get_db_engine(config)
     conn = connect(project_root)
@@ -185,7 +157,6 @@ def ensure_mysql_database(config: Dict[str, Any]):
 
 
 def ensure_schema(project_root: str):
-    project_root = _resolve_project_root(project_root)
     config = load_config(project_root)
     ensure_mysql_database(config)
     _ensure_mysql_tables(project_root, config)
@@ -231,8 +202,7 @@ def _ensure_mysql_tables(project_root: str, config: Dict[str, Any]):
             id BIGINT PRIMARY KEY AUTO_INCREMENT,
             hospital_name VARCHAR(255),
             fingerprint BIGINT UNSIGNED,
-            -- URL may exceed 1KB in some platforms; keep it in-row but index only a prefix.
-            event_url VARCHAR(2048),
+            event_url VARCHAR(1024),
             total_count BIGINT DEFAULT 1,
             last_title TEXT,
             last_reason TEXT,
@@ -287,13 +257,6 @@ def _ensure_mysql_tables(project_root: str, config: Dict[str, Any]):
         )
         return cursor.fetchone() is not None
 
-    def _mysql_index_info(table: str, index_name: str) -> Dict[str, Any] | None:
-        cursor.execute(
-            "SHOW INDEX FROM `{}` WHERE Key_name=%s".format(table),
-            (index_name,),
-        )
-        return cursor.fetchone()
-
     def _mysql_column_exists(table: str, column_name: str) -> bool:
         cursor.execute(
             """
@@ -332,17 +295,6 @@ def _ensure_mysql_tables(project_root: str, config: Dict[str, Any]):
         # utf8mb4 下 1024 字符可能超过 InnoDB 索引长度上限（3072 bytes）。
         # 用前缀索引既能支持等值查询的快速过滤，又避免建索引失败。
         cursor.execute('CREATE INDEX idx_event_groups_url ON event_groups(event_url(191))')
-    else:
-        # If the index exists but is not a prefix index (Sub_part is NULL), rebuild it.
-        info = _mysql_index_info("event_groups", "idx_event_groups_url") or {}
-        sub_part = info.get("Sub_part")
-        col = info.get("Column_name")
-        if col == "event_url" and (sub_part is None or int(sub_part) <= 0 or int(sub_part) > 191):
-            try:
-                cursor.execute("DROP INDEX idx_event_groups_url ON event_groups")
-            except Exception:
-                pass
-            cursor.execute('CREATE INDEX idx_event_groups_url ON event_groups(event_url(191))')
 
     conn.commit()
     conn.close()

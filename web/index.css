@@ -140,3 +140,17 @@
   color: #c7d2fe !important;
 }
 
+.report-progress-fill {
+  background: linear-gradient(90deg, #6366f1 0%, #22d3ee 50%, #38bdf8 100%);
+  background-size: 200% 100%;
+  animation: reportProgressFlow 1.4s linear infinite;
+}
+
+@keyframes reportProgressFlow {
+  0% {
+    background-position: 0% 0%;
+  }
+  100% {
+    background-position: 200% 0%;
+  }
+}

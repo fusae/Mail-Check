@@ -33,9 +33,7 @@ type Severity = "low" | "medium" | "high";
 
 interface OpinionItem {
   id: string;
-  event_id?: number | null;
-  event_total?: number | null;
-  is_duplicate?: boolean;
+  rowId?: number;
   hospital: string;
   title: string;
   source: string;
@@ -50,13 +48,8 @@ interface OpinionItem {
   createdAt: string;
 }
 
-const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)?.trim() || "";
-const apiFetch = (path: string, options?: RequestInit) => {
-  if (!API_BASE) {
-    return Promise.reject(new Error("未配置 VITE_API_BASE（前端无法找到后端API地址）"));
-  }
-  return fetch(`${API_BASE}${path}`, options);
-};
+const API_BASE = ((import.meta.env.VITE_API_BASE as string | undefined) || "").trim();
+const apiFetch = (path: string, options?: RequestInit) => fetch(`${API_BASE}${path}`, options);
 
 const severityMeta = {
   high: {
@@ -176,6 +169,16 @@ const formatDateInput = (date: Date) => {
   return formatLocalDate(date);
 };
 
+const getOpinionRowKey = (item: OpinionItem) => {
+  if (typeof item.rowId === "number") return `row:${item.rowId}`;
+  return `sid:${item.id}|${item.hospital}|${item.createdAt}`;
+};
+
+const getOpinionDisplayTitle = (item: OpinionItem) => {
+  const title = (item.title || "").trim();
+  return { text: title || "无标题", fallback: !title };
+};
+
 const OpinionDashboard = () => {
   const [opinions, setOpinions] = useState<OpinionItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -193,7 +196,6 @@ const OpinionDashboard = () => {
   const [severityFilter, setSeverityFilter] = useState<Severity | "all">("all");
   const [hospitalFilter, setHospitalFilter] = useState("all");
   const [showDismissed, setShowDismissed] = useState(false);
-  const [groupByEvent, setGroupByEvent] = useState(true);
   const [timeRange, setTimeRange] = useState<"24h" | "7d" | "30d">("7d");
   const [trendMode, setTrendMode] = useState<"count" | "score">("count");
   const [tooltipContent, setTooltipContent] = useState<{ title: string; content: string; position: { x: number; y: number } } | null>(null);
@@ -219,8 +221,10 @@ const OpinionDashboard = () => {
     end: ""
   });
   const [reportHospital, setReportHospital] = useState("all");
-  const [reportFormat, setReportFormat] = useState<"markdown" | "word">("word");
+  const [reportFormat, setReportFormat] = useState<"markdown" | "word" | "both">("word");
+  const [selectedReportKeys, setSelectedReportKeys] = useState<Set<string>>(new Set());
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
+  const [reportProgress, setReportProgress] = useState(0);
   const [suppressModalOpen, setSuppressModalOpen] = useState(false);
   const [suppressKeywords, setSuppressKeywords] = useState<string[]>([]);
   const [newKeyword, setNewKeyword] = useState("");
@@ -231,7 +235,7 @@ const OpinionDashboard = () => {
     setIsLoading(true);
     setError(null);
     try {
-      const response = await apiFetch("/api/opinions?status=all&compact=1&preview=240");
+      const response = await apiFetch("/api/opinions?status=all&compact=1&preview=240&limit=5000");
       if (!response.ok) throw new Error("无法连接到后端接口");
       const data = await response.json();
       setOpinions(data);
@@ -427,40 +431,56 @@ const OpinionDashboard = () => {
     });
   }, [opinions, severityFilter, hospitalFilter, showDismissed]);
 
-  const displayOpinions = useMemo(() => {
-    if (!groupByEvent) return filteredOpinions;
-
-    // Keep the most recent item per event. If no event_id, fall back to sentiment id.
-    const keyOf = (item: OpinionItem) => (item.event_id ? `e:${item.event_id}` : `s:${item.id}`);
-    const counts = new Map<string, number>();
-    for (const item of filteredOpinions) {
-      const k = keyOf(item);
-      counts.set(k, (counts.get(k) || 0) + 1);
-    }
-
-    const seen = new Set<string>();
-    const out: OpinionItem[] = [];
-    for (const item of filteredOpinions) {
-      const k = keyOf(item);
-      if (seen.has(k)) continue;
-      seen.add(k);
-      const inferredTotal = counts.get(k) || 1;
-      const mergedTotal = Number(item.event_total || 0) > 0 ? item.event_total : inferredTotal;
-      out.push({ ...item, event_total: mergedTotal });
-    }
-    return out;
-  }, [filteredOpinions, groupByEvent]);
-
-  const listStatsLabel = useMemo(() => {
-    if (!groupByEvent) {
-      return `${filteredOpinions.length} 条记录${statsOverride ? ` / 共 ${statsOverride.total} 条` : ""}`;
-    }
-    return `${displayOpinions.length} 个事件 / ${filteredOpinions.length} 条舆情${statsOverride ? ` / 共 ${statsOverride.total} 条` : ""}`;
-  }, [groupByEvent, displayOpinions.length, filteredOpinions.length, statsOverride]);
-
   const activeOpinions = useMemo(() => {
     return opinions.filter((o) => o.status !== "dismissed");
   }, [opinions]);
+
+  const reportCandidateOpinions = useMemo(() => {
+    return activeOpinions.filter((item) => {
+      if (reportHospital !== "all" && item.hospital !== reportHospital) return false;
+
+      const itemDate = typeof item.createdAt === "string" ? parseLocalDateTime(item.createdAt) : null;
+      if (!itemDate) return false;
+
+      if (reportDateRange.start) {
+        const startDate = parseDateInput(reportDateRange.start);
+        if (startDate && itemDate < startDate) return false;
+      }
+
+      if (reportDateRange.end) {
+        const endDate = parseDateInput(reportDateRange.end);
+        if (endDate) {
+          endDate.setHours(23, 59, 59, 999);
+          if (itemDate > endDate) return false;
+        }
+      }
+      return true;
+    });
+  }, [activeOpinions, reportHospital, reportDateRange.start, reportDateRange.end]);
+
+  const reportCandidateKeys = useMemo(
+    () => reportCandidateOpinions.map((item) => getOpinionRowKey(item)),
+    [reportCandidateOpinions]
+  );
+  const reportCandidateKeySet = useMemo(() => new Set(reportCandidateKeys), [reportCandidateKeys]);
+  const effectiveSelectedReportKeys = useMemo(
+    () => Array.from(selectedReportKeys).filter((key) => reportCandidateKeySet.has(key)),
+    [selectedReportKeys, reportCandidateKeySet]
+  );
+  const selectedReportRows = useMemo(() => {
+    const selectedSet = new Set(effectiveSelectedReportKeys);
+    return reportCandidateOpinions.filter((item) => selectedSet.has(getOpinionRowKey(item)));
+  }, [reportCandidateOpinions, effectiveSelectedReportKeys]);
+
+  useEffect(() => {
+    if (!exportReportOpen) return;
+    // 首次打开默认全选；之后仅裁剪为当前筛选结果，避免每次日期变化都重建超大集合导致卡顿
+    setSelectedReportKeys((prev) => {
+      if (prev.size === 0) return new Set(reportCandidateKeys);
+      const next = new Set(Array.from(prev).filter((key) => reportCandidateKeySet.has(key)));
+      return next;
+    });
+  }, [exportReportOpen, reportCandidateKeys, reportCandidateKeySet]);
 
   const trendData = useMemo(() => {
     if (trendOverride) return trendOverride;
@@ -703,13 +723,57 @@ const OpinionDashboard = () => {
     URL.revokeObjectURL(link.href);
   };
 
+  const toggleReportSelection = (rowKey: string) => {
+    setSelectedReportKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(rowKey)) next.delete(rowKey);
+      else next.add(rowKey);
+      return next;
+    });
+  };
+
+  const selectAllReportCandidates = () => {
+    setSelectedReportKeys(new Set(reportCandidateKeys));
+  };
+
+  const clearReportSelection = () => {
+    setSelectedReportKeys(new Set());
+  };
+
+  const toggleSelectAllReportCandidates = () => {
+    const allSelected =
+      reportCandidateKeys.length > 0 &&
+      reportCandidateKeys.every((key) => selectedReportKeys.has(key));
+    if (allSelected) {
+      clearReportSelection();
+    } else {
+      selectAllReportCandidates();
+    }
+  };
+
   const generateHospitalReport = async () => {
     if (!reportHospital) {
       alert('请选择医院');
       return;
     }
+    if (reportDateRange.start && reportDateRange.end && reportDateRange.start > reportDateRange.end) {
+      alert('开始日期不能晚于结束日期');
+      return;
+    }
+    if (selectedReportRows.length === 0) {
+      alert("请至少勾选一条舆情");
+      return;
+    }
 
     setIsGeneratingReport(true);
+    setReportProgress(6);
+    const progressTimer = window.setInterval(() => {
+      setReportProgress((prev) => {
+        if (prev >= 92) return prev;
+        const step = Math.max(1, Math.floor((95 - prev) / 10));
+        return Math.min(92, prev + step);
+      });
+    }, 700);
     try {
       const response = await apiFetch("/api/report/generate", {
         method: "POST",
@@ -719,6 +783,12 @@ const OpinionDashboard = () => {
           start_date: reportDateRange.start || "",
           end_date: reportDateRange.end || "",
           format: reportFormat,
+          include_dismissed: false,
+          dedupe_by_event: true,
+          sentiment_ids: selectedReportRows.map((item) => item.id),
+          record_ids: selectedReportRows
+            .map((item) => item.rowId)
+            .filter((v): v is number => typeof v === "number"),
         }),
       });
 
@@ -731,38 +801,60 @@ const OpinionDashboard = () => {
         throw new Error(data?.message || "报告生成失败");
       }
 
-      const downloadPath =
-        data?.files?.[reportFormat] ||
-        data?.files?.markdown ||
-        data?.files?.word;
+      const formatsToDownload: Array<"word" | "markdown"> =
+        reportFormat === "both" ? ["word", "markdown"] : [reportFormat];
 
-      if (!downloadPath) {
-        throw new Error("未返回可下载的报告文件");
+      setReportProgress(94);
+      for (const fmt of formatsToDownload) {
+        const downloadPath = data?.files?.[fmt];
+        if (!downloadPath) continue;
+
+        const downloadUrl = downloadPath.startsWith("http")
+          ? downloadPath
+          : `${API_BASE}${downloadPath}`;
+
+        const fileResponse = await fetch(downloadUrl);
+        if (!fileResponse.ok) {
+          throw new Error("报告下载失败");
+        }
+
+        const blob = await fileResponse.blob();
+        const reportName = reportHospital === "all" ? "全院汇总" : reportHospital;
+        const fallbackName = `${reportName}_舆情报告_${formatLocalDate(new Date())}.${fmt === "word" ? "docx" : "md"}`;
+        const serverName = data?.file_meta?.[fmt]?.filename;
+        const filename = typeof serverName === "string" && serverName.trim() ? serverName : fallbackName;
+
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(blob);
+        link.download = filename;
+        link.click();
+        URL.revokeObjectURL(link.href);
+
+        setReportProgress((prev) =>
+          Math.min(98, prev + Math.max(1, Math.floor(4 / Math.max(formatsToDownload.length, 1))))
+        );
       }
 
-      const downloadUrl = downloadPath.startsWith("http")
-        ? downloadPath
-        : `${API_BASE}${downloadPath}`;
-
-      const fileResponse = await fetch(downloadUrl);
-      if (!fileResponse.ok) {
-        throw new Error("报告下载失败");
+      const rawTotal = data?.summary?.raw_total_events;
+      const finalTotal = data?.summary?.total_events;
+      const includedHospitals: string[] = Array.isArray(data?.summary?.included_hospitals)
+        ? data.summary.included_hospitals
+        : [];
+      if (reportHospital !== "all" && includedHospitals.length > 1) {
+        console.warn(`报告包含多个医院：${includedHospitals.join("、")}`);
       }
-
-      const blob = await fileResponse.blob();
-      const reportName = reportHospital === "all" ? "全院汇总" : reportHospital;
-      const filename = `${reportName}_舆情报告_${formatLocalDate(new Date())}.${reportFormat === "word" ? "docx" : "md"}`;
-      const link = document.createElement("a");
-      link.href = URL.createObjectURL(blob);
-      link.download = filename;
-      link.click();
-      URL.revokeObjectURL(link.href);
+      if (typeof rawTotal === "number" && typeof finalTotal === "number") {
+        setReportProgress(100);
+      }
 
       setExportReportOpen(false);
     } catch (err) {
-      alert("报告生成失败，请检查后端接口。");
+      console.error("报告生成失败", err);
+      setError("报告生成失败，请检查后端接口。");
     } finally {
+      window.clearInterval(progressTimer);
       setIsGeneratingReport(false);
+      setReportProgress(0);
     }
   };
 
@@ -1226,7 +1318,7 @@ const OpinionDashboard = () => {
             <div className="flex flex-wrap items-center justify-between gap-4">
               <h2 className="font-display text-xl font-semibold">实时舆情列表</h2>
               <span className="text-xs text-slate-500">
-                {listStatsLabel}
+                {filteredOpinions.length} 条记录{statsOverride ? ` / 共 ${statsOverride.total} 条` : ""}
               </span>
             </div>
             <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-slate-800/70 bg-slate-900/40 px-4 py-3 text-xs text-slate-400">
@@ -1267,21 +1359,7 @@ const OpinionDashboard = () => {
                 />
                 显示误报
               </label>
-              <label className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={groupByEvent}
-                  onChange={(e) => setGroupByEvent(e.target.checked)}
-                  className="h-4 w-4 rounded border-slate-700 bg-slate-950 text-indigo-500"
-                />
-                按事件聚合
-              </label>
             </div>
-            <p className="mt-2 text-[11px] text-slate-500">
-              {groupByEvent
-                ? "已按事件聚合：每个事件仅显示最新一条。"
-                : "未聚合：同一事件的多条舆情会分别显示。"}
-            </p>
 
             <div className="flex-1 min-h-0">
               {isLoading ? (
@@ -1289,25 +1367,19 @@ const OpinionDashboard = () => {
                   <Loader2 className="h-8 w-8 animate-spin text-indigo-400" />
                   <p className="mt-4 text-xs uppercase tracking-widest text-slate-500">加载中</p>
                 </div>
-              ) : displayOpinions.length === 0 ? (
+              ) : filteredOpinions.length === 0 ? (
                 <div className="flex h-full min-h-[320px] flex-col items-center justify-center rounded-3xl border border-slate-800/70 bg-slate-900/40 text-slate-500">
                   暂无舆情数据
                 </div>
               ) : (
                 <div className="h-full space-y-4 overflow-y-auto pr-2">
-                  {displayOpinions.map((item) => {
+                  {filteredOpinions.map((item) => {
                     const meta = severityMeta[normalizeSeverity(item.severity)];
                     const scoreValue = Math.round((item.score || meta.score) * 100);
-                    const eventTotal = Number(item.event_total || 0) || 0;
-                    const duplicateEventUngrouped = !groupByEvent && eventTotal > 1;
                     return (
                       <article
                         key={item.id}
-                        className={`group rounded-3xl border border-slate-800/70 bg-slate-900/45 p-6 backdrop-blur transition hover:border-indigo-500/50 ${meta.glow} ${
-                          duplicateEventUngrouped
-                            ? "ring-1 ring-indigo-400/40 border-indigo-500/40"
-                            : ""
-                        }`}
+                        className={`group rounded-3xl border border-slate-800/70 bg-slate-900/45 p-6 backdrop-blur transition hover:border-indigo-500/50 ${meta.glow}`}
                       >
                     <div className="flex items-start justify-between gap-4">
                       <div>
@@ -1315,16 +1387,6 @@ const OpinionDashboard = () => {
                           <span className={`rounded-full border px-3 py-1 text-[10px] font-semibold uppercase tracking-widest ${meta.pill}`}>
                             {meta.label}
                           </span>
-                          {eventTotal > 1 && (
-                            <span className="rounded-full border border-indigo-500/40 bg-indigo-500/10 px-2 py-1 text-[10px] uppercase tracking-wider text-indigo-200">
-                              事件池 {eventTotal} 条
-                            </span>
-                          )}
-                          {item.is_duplicate && (
-                            <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] uppercase tracking-wider text-amber-200">
-                              重复
-                            </span>
-                          )}
                           {item.status === "dismissed" && (
                             <span className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[10px] uppercase tracking-wider text-emerald-200">
                               已误报
@@ -1431,25 +1493,6 @@ const OpinionDashboard = () => {
                 <p className="text-xs uppercase tracking-widest text-slate-500">舆情信息</p>
                 <p className="mt-2 text-base font-semibold text-white">{selectedItem.hospital}</p>
                 <p className="mt-1 text-xs text-slate-400">{selectedItem.source} · {formatTime(selectedItem.createdAt)}</p>
-                {(selectedItem.event_id || selectedItem.event_total || selectedItem.is_duplicate) && (
-                  <div className="mt-3 flex flex-wrap items-center gap-2 text-[10px] text-slate-300">
-                    {selectedItem.event_total ? (
-                      <span className="rounded-full border border-indigo-500/40 bg-indigo-500/10 px-2 py-1 uppercase tracking-wider text-indigo-200">
-                        事件池 {selectedItem.event_total} 条
-                      </span>
-                    ) : null}
-                    {selectedItem.is_duplicate ? (
-                      <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-1 uppercase tracking-wider text-amber-200">
-                        重复舆情
-                      </span>
-                    ) : null}
-                    {selectedItem.event_id ? (
-                      <span className="rounded-full border border-slate-700/60 bg-slate-900/40 px-2 py-1 uppercase tracking-wider text-slate-300">
-                        Event #{selectedItem.event_id}
-                      </span>
-                    ) : null}
-                  </div>
-                )}
                 {selectedItem.url && (
                   <a
                     href={selectedItem.url}
@@ -1461,52 +1504,6 @@ const OpinionDashboard = () => {
                   </a>
                 )}
               </div>
-
-              {selectedItem.event_id && (
-                <div className="rounded-2xl border border-slate-800/70 bg-slate-950/40 p-4">
-                  <p className="text-xs uppercase tracking-widest text-slate-500">事件追踪（本地已加载范围）</p>
-                  <div className="mt-3 space-y-2">
-                    {opinions
-                      .filter((o) => o.event_id && o.event_id === selectedItem.event_id)
-                      .slice()
-                      .sort((a, b) => {
-                        const at = parseLocalDateTime(a.createdAt)?.getTime() ?? 0;
-                        const bt = parseLocalDateTime(b.createdAt)?.getTime() ?? 0;
-                        return at - bt;
-                      })
-                      .slice(0, 12)
-                      .map((o) => (
-                        <button
-                          key={o.id}
-                          type="button"
-                          onClick={() => handleInsight(o)}
-                          className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-800/70 bg-slate-900/40 px-3 py-2 text-left text-xs text-slate-300 hover:border-indigo-500/40"
-                        >
-                          <div className="min-w-0">
-                            <div className="truncate text-slate-200">{o.title}</div>
-                            <div className="mt-1 flex items-center gap-2 text-[10px] text-slate-500">
-                              <span>{formatTime(o.createdAt)}</span>
-                              <span>·</span>
-                              <span>{o.source}</span>
-                              {o.is_duplicate ? (
-                                <>
-                                  <span>·</span>
-                                  <span className="text-amber-200">重复</span>
-                                </>
-                              ) : null}
-                            </div>
-                          </div>
-                          <ArrowUpRight className="h-4 w-4 flex-none text-slate-500" />
-                        </button>
-                      ))}
-                    {selectedItem.event_total && selectedItem.event_total > 12 && (
-                      <p className="pt-1 text-[10px] text-slate-500">
-                        注：事件池共 {selectedItem.event_total} 条，这里仅展示当前已加载的最多 12 条。
-                      </p>
-                    )}
-                  </div>
-                </div>
-              )}
 
               <div className="rounded-2xl border border-slate-800/70 bg-slate-950/40 p-4">
                 <p className="text-xs uppercase tracking-widest text-slate-500">舆情内容</p>
@@ -1622,101 +1619,215 @@ const OpinionDashboard = () => {
 
       {exportReportOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm" onClick={() => setExportReportOpen(false)} />
-          <div className="relative w-full max-w-md rounded-3xl border border-indigo-500/30 bg-slate-900/95 p-6 shadow-2xl">
+          <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm" onClick={() => !isGeneratingReport && setExportReportOpen(false)} />
+          <div className="relative max-h-[90vh] w-[96vw] max-w-6xl overflow-hidden rounded-3xl border border-indigo-500/30 bg-slate-900/95 p-6 shadow-2xl">
             <div className="flex items-center justify-between mb-6">
-              <h3 className="text-lg font-semibold">生成医院舆情报告</h3>
-              <button onClick={() => setExportReportOpen(false)} className="rounded-full p-2 text-slate-400 hover:bg-slate-800">
+              <h3 className="text-lg font-semibold">生成医院舆情报告 v20260303-2</h3>
+              <button onClick={() => !isGeneratingReport && setExportReportOpen(false)} className="rounded-full p-2 text-slate-400 hover:bg-slate-800">
                 <X className="h-4 w-4" />
               </button>
             </div>
 
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-2">
-                  选择医院 <span className="text-red-400">*</span>
-                </label>
-                <select
-                  value={reportHospital}
-                  onChange={(e) => setReportHospital(e.target.value)}
-                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 focus:border-indigo-500 focus:outline-none"
-                >
-                  <option value="all">全院汇总</option>
-                  {hospitalOptions.filter(h => h !== 'all').map(h => (
-                    <option key={h} value={h}>{h}</option>
-                  ))}
-                </select>
-              </div>
+            <div className="grid max-h-[calc(90vh-160px)] gap-4 overflow-hidden lg:grid-cols-[340px_1fr]">
+              <div className="space-y-4 overflow-y-auto pr-1">
+                <div>
+                  <label className="block text-sm font-medium text-slate-300 mb-2">
+                    选择医院 <span className="text-red-400">*</span>
+                  </label>
+                  <select
+                    value={reportHospital}
+                    onChange={(e) => setReportHospital(e.target.value)}
+                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 focus:border-indigo-500 focus:outline-none"
+                  >
+                    <option value="all">全院汇总</option>
+                    {hospitalOptions.filter(h => h !== 'all').map(h => (
+                      <option key={h} value={h}>{h}</option>
+                    ))}
+                  </select>
+                </div>
 
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-2">时间范围</label>
-                <div className="flex items-center gap-3">
-                  <div className="flex-1">
-                    <DatePicker
-                      selected={reportDateRange.start ? parseDateInput(reportDateRange.start) : null}
-                      onChange={(date: Date | null) => setReportDateRange({ ...reportDateRange, start: date ? formatDateInput(date) : "" })}
-                      selectsStart
-                      startDate={reportDateRange.start ? parseDateInput(reportDateRange.start) : null}
-                      endDate={reportDateRange.end ? parseDateInput(reportDateRange.end) : null}
-                      dateFormat="yyyy-MM-dd"
-                      placeholderText="开始日期"
-                      className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 focus:border-indigo-500 focus:outline-none"
-                    />
+                <div>
+                  <label className="block text-sm font-medium text-slate-300 mb-2">时间范围</label>
+                  <div className="flex items-center gap-3">
+                    <div className="flex-1">
+                      <DatePicker
+                        selected={reportDateRange.start ? parseDateInput(reportDateRange.start) : null}
+                        onChange={(date: Date | null) => setReportDateRange({ ...reportDateRange, start: date ? formatDateInput(date) : "" })}
+                        selectsStart
+                        startDate={reportDateRange.start ? parseDateInput(reportDateRange.start) : null}
+                        endDate={reportDateRange.end ? parseDateInput(reportDateRange.end) : null}
+                        dateFormat="yyyy-MM-dd"
+                        placeholderText="开始日期"
+                        className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 focus:border-indigo-500 focus:outline-none"
+                      />
+                    </div>
+                    <span className="text-slate-500">至</span>
+                    <div className="flex-1">
+                      <DatePicker
+                        selected={reportDateRange.end ? parseDateInput(reportDateRange.end) : null}
+                        onChange={(date: Date | null) => setReportDateRange({ ...reportDateRange, end: date ? formatDateInput(date) : "" })}
+                        selectsEnd
+                        startDate={reportDateRange.start ? parseDateInput(reportDateRange.start) : null}
+                        endDate={reportDateRange.end ? parseDateInput(reportDateRange.end) : null}
+                        minDate={reportDateRange.start ? parseDateInput(reportDateRange.start) : null}
+                        dateFormat="yyyy-MM-dd"
+                        placeholderText="结束日期"
+                        className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 focus:border-indigo-500 focus:outline-none"
+                      />
+                    </div>
                   </div>
-                  <span className="text-slate-500">至</span>
-                  <div className="flex-1">
-                    <DatePicker
-                      selected={reportDateRange.end ? parseDateInput(reportDateRange.end) : null}
-                      onChange={(date: Date | null) => setReportDateRange({ ...reportDateRange, end: date ? formatDateInput(date) : "" })}
-                      selectsEnd
-                      startDate={reportDateRange.start ? parseDateInput(reportDateRange.start) : null}
-                      endDate={reportDateRange.end ? parseDateInput(reportDateRange.end) : null}
-                      minDate={reportDateRange.start ? parseDateInput(reportDateRange.start) : null}
-                      dateFormat="yyyy-MM-dd"
-                      placeholderText="结束日期"
-                      className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 focus:border-indigo-500 focus:outline-none"
-                    />
+                  <p className="text-xs text-slate-500 mt-1">留空则导出该医院全部时间范围</p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-300 mb-2">报告格式</label>
+                  <div className="flex gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setReportFormat("markdown")}
+                      className={`flex-1 rounded-xl border px-4 py-3 text-sm font-medium transition ${
+                        reportFormat === "markdown"
+                          ? "border-indigo-500/60 bg-indigo-500/20 text-indigo-100"
+                          : "border-slate-700 bg-slate-950 text-slate-300 hover:bg-slate-900"
+                      }`}
+                    >
+                      Markdown
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setReportFormat("word")}
+                      className={`flex-1 rounded-xl border px-4 py-3 text-sm font-medium transition ${
+                        reportFormat === "word"
+                          ? "border-indigo-500/60 bg-indigo-500/20 text-indigo-100"
+                          : "border-slate-700 bg-slate-950 text-slate-300 hover:bg-slate-900"
+                      }`}
+                    >
+                      Word
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setReportFormat("both")}
+                      className={`flex-1 rounded-xl border px-4 py-3 text-sm font-medium transition ${
+                        reportFormat === "both"
+                          ? "border-indigo-500/60 bg-indigo-500/20 text-indigo-100"
+                          : "border-slate-700 bg-slate-950 text-slate-300 hover:bg-slate-900"
+                      }`}
+                    >
+                      两种都要
+                    </button>
                   </div>
                 </div>
-                <p className="text-xs text-slate-500 mt-1">留空则导出该医院全部时间范围</p>
               </div>
 
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-2">报告格式</label>
-                <div className="flex gap-3">
-                  <button
-                    type="button"
-                    onClick={() => setReportFormat("markdown")}
-                    className={`flex-1 rounded-xl border px-4 py-3 text-sm font-medium transition ${
-                      reportFormat === "markdown"
-                        ? "border-indigo-500/60 bg-indigo-500/20 text-indigo-100"
-                        : "border-slate-700 bg-slate-950 text-slate-300 hover:bg-slate-900"
-                    }`}
-                  >
-                    Markdown
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setReportFormat("word")}
-                    className={`flex-1 rounded-xl border px-4 py-3 text-sm font-medium transition ${
-                      reportFormat === "word"
-                        ? "border-indigo-500/60 bg-indigo-500/20 text-indigo-100"
-                        : "border-slate-700 bg-slate-950 text-slate-300 hover:bg-slate-900"
-                    }`}
-                  >
-                    Word
-                  </button>
+              <div className="min-h-0 rounded-2xl border border-slate-700 bg-slate-950/60 p-4">
+                <div className="mb-3 flex items-center justify-between">
+                  <div className="text-sm text-slate-300">
+                    当前候选 {reportCandidateOpinions.length} 条，已勾选{" "}
+                    <span className="font-semibold text-indigo-300">{selectedReportRows.length}</span> 条
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={toggleSelectAllReportCandidates}
+                      className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-1 text-xs text-slate-200 hover:bg-slate-800"
+                    >
+                      {reportCandidateKeys.length > 0 &&
+                      reportCandidateKeys.every((key) => selectedReportKeys.has(key))
+                        ? "取消全选"
+                        : "一键全选"}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="max-h-[50vh] space-y-2 overflow-auto pr-1">
+                  {reportCandidateOpinions.length === 0 ? (
+                    <div className="rounded-xl border border-dashed border-slate-700 px-4 py-6 text-center text-sm text-slate-500">
+                      当前筛选下暂无可用舆情
+                    </div>
+                  ) : (
+                    reportCandidateOpinions.map((item) => (
+                      <label
+                        key={getOpinionRowKey(item)}
+                        className="flex cursor-pointer items-start gap-3 rounded-xl border border-slate-700 bg-slate-900/60 px-3 py-2 hover:bg-slate-900"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedReportKeys.has(getOpinionRowKey(item))}
+                          onChange={() => toggleReportSelection(getOpinionRowKey(item))}
+                          className="mt-1 h-4 w-4 accent-indigo-500"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm text-slate-100 whitespace-normal break-words">
+                            {getOpinionDisplayTitle(item).text}
+                            {item.url && (
+                              <a
+                                href={item.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                onClick={(e) => e.stopPropagation()}
+                                className="ml-2 text-xs text-sky-300 underline underline-offset-2 hover:text-sky-200"
+                              >
+                                （跳转原文）
+                              </a>
+                            )}
+                          </div>
+                          <div className="mt-1 text-xs text-slate-400">
+                            {item.hospital} | {item.source} | {item.createdAt} | ID:{item.id}
+                          </div>
+                        </div>
+                      </label>
+                    ))
+                  )}
                 </div>
               </div>
+            </div>
 
+            <div className="mt-4 space-y-3">
+              <button
+                type="button"
+                onClick={toggleSelectAllReportCandidates}
+                className="w-full rounded-xl border border-slate-700 bg-slate-900 px-4 py-2 text-sm font-medium text-slate-100 hover:bg-slate-800"
+              >
+                {reportCandidateKeys.length > 0 &&
+                reportCandidateKeys.every((key) => selectedReportKeys.has(key))
+                  ? "取消全选（快捷）"
+                  : "一键全选（快捷）"}
+              </button>
               <button
                 onClick={generateHospitalReport}
-                disabled={isGeneratingReport || !reportHospital}
+                disabled={isGeneratingReport || !reportHospital || selectedReportRows.length === 0}
                 className="w-full rounded-xl border border-indigo-500/40 bg-indigo-500/10 px-4 py-3 text-sm font-medium text-indigo-200 transition hover:bg-indigo-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {isGeneratingReport ? '生成中...' : '生成报告'}
+                {isGeneratingReport ? '生成中...' : `生成报告（${selectedReportRows.length}条）`}
               </button>
             </div>
+
+            {isGeneratingReport && (
+              <div className="absolute inset-0 z-20 flex items-center justify-center rounded-3xl bg-slate-950/82 backdrop-blur-sm">
+                <div className="w-[min(560px,92%)] rounded-2xl border border-indigo-400/30 bg-[#0b1b46]/95 p-5 shadow-2xl">
+                  <div className="flex items-center gap-3">
+                    <Loader2 className="h-5 w-5 animate-spin text-indigo-300" />
+                    <p className="text-base font-semibold text-indigo-100">正在生成舆情报告</p>
+                  </div>
+                  <p className="mt-2 text-sm text-slate-300">
+                    {reportProgress < 35
+                      ? "正在拉取并过滤舆情数据..."
+                      : reportProgress < 75
+                      ? "正在分析重点事件并生成处置建议..."
+                      : reportProgress < 95
+                      ? "正在渲染报告内容与关键词云..."
+                      : "正在打包并下载文件..."}
+                  </p>
+                  <div className="mt-4 h-2 w-full overflow-hidden rounded-full bg-slate-800">
+                    <div className="report-progress-fill h-full rounded-full" style={{ width: `${Math.max(4, reportProgress)}%` }} />
+                  </div>
+                  <div className="mt-2 flex items-center justify-between text-xs text-slate-400">
+                    <span>请勿关闭窗口</span>
+                    <span>{Math.round(reportProgress)}%</span>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

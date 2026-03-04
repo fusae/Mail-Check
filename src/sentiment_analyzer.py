@@ -9,7 +9,6 @@ import json
 import logging
 import os
 import re
-import time
 import db
 
 import requests
@@ -34,56 +33,7 @@ class SentimentAnalyzer:
         self.db_path = None
         
         self.logger = logging.getLogger(__name__)
-
-    def _post_with_retry(self, url, headers, data, timeout):
-        """
-        Simple retry + exponential backoff for transient AI/API failures.
-        Retries on:
-        - network exceptions (timeout/connection)
-        - selected HTTP statuses (default: 429/500/502/503/504)
-        """
-        retry_cfg = (self.ai_config.get("retry", {}) or {})
-        max_attempts = int(retry_cfg.get("max_attempts", 3))
-        backoff_base = float(retry_cfg.get("backoff_seconds", 1.0))
-        backoff_cap = float(retry_cfg.get("backoff_max_seconds", 8.0))
-        retry_statuses = set(retry_cfg.get("retry_statuses", [429, 500, 502, 503, 504]))
-
-        last_exc = None
-        for attempt in range(1, max_attempts + 1):
-            try:
-                resp = requests.post(url, headers=headers, json=data, timeout=timeout)
-
-                # Retry on selected HTTP statuses.
-                if resp.status_code in retry_statuses and attempt < max_attempts:
-                    retry_after = resp.headers.get("Retry-After")
-                    sleep_s = min(backoff_cap, backoff_base * (2 ** (attempt - 1)))
-                    if retry_after:
-                        try:
-                            sleep_s = min(backoff_cap, float(retry_after))
-                        except Exception:
-                            pass
-                    self.logger.warning(
-                        f"AI请求返回{resp.status_code}，准备重试 {attempt}/{max_attempts - 1}，等待{sleep_s:.1f}s"
-                    )
-                    time.sleep(sleep_s)
-                    continue
-
-                resp.raise_for_status()
-                return resp
-            except requests.exceptions.RequestException as exc:
-                last_exc = exc
-                if attempt >= max_attempts:
-                    break
-                sleep_s = min(backoff_cap, backoff_base * (2 ** (attempt - 1)))
-                self.logger.warning(
-                    f"AI请求异常: {exc}，准备重试 {attempt}/{max_attempts - 1}，等待{sleep_s:.1f}s"
-                )
-                time.sleep(sleep_s)
-
-        if last_exc:
-            raise last_exc
-        raise RuntimeError("AI请求失败（未知原因）")
-
+    
     def analyze(self, sentiment, hospital_name):
         """分析舆情是否为负面"""
         rule_result = self._apply_feedback_rules(sentiment)
@@ -96,83 +46,6 @@ class SentimentAnalyzer:
             return self._analyze_with_deepseek(sentiment, hospital_name)
         self.logger.warning(f"不支持的AI提供商: {self.provider}")
         return self._default_analysis(sentiment, error_reason=f"不支持的AI提供商: {self.provider}")
-
-    def judge_same_event(self, hospital_name, a, b):
-        """
-        AI referee: decide whether two items describe the same public-opinion event.
-        This is intentionally strict and lightweight (yes/no + short reason).
-
-        Returns dict:
-          { "same_event": bool, "reason": str, "confidence": "high|medium|low" }
-        May raise on request failure.
-        """
-        a = a or {}
-        b = b or {}
-
-        # Keep payload small.
-        def _clip(s, n):
-            s = (s or "").strip()
-            return s if len(s) <= n else (s[:n] + "...")
-
-        prompt = f"""你是医院舆情事件管理员。请判断下面两条舆情是否属于同一“舆情事件”（同一核心争议点/同一传播内容）。
-
-判断标准（同时满足更倾向 yes）：
-1. 指向同一医院/同一地点（或同一医院周边）
-2. 围绕同一争议点/同一投诉点/同一爆料
-3. 叙事细节、人物、时间线高度一致（哪怕URL不同）
-
-如果只是“同医院但不同事情”，返回 no。
-
-舆情A：
-- 医院: {hospital_name}
-- 来源: {_clip(a.get('source'), 20)}
-- 标题: {_clip(a.get('title'), 120)}
-- 摘要/理由: {_clip(a.get('reason'), 160)}
-- URL: {_clip(a.get('url'), 200)}
-
-舆情B：
-- 医院: {hospital_name}
-- 来源: {_clip(b.get('source'), 20)}
-- 标题: {_clip(b.get('title'), 120)}
-- 摘要/理由: {_clip(b.get('reason'), 160)}
-- URL: {_clip(b.get('url'), 200)}
-
-只返回JSON（不要代码块，不要多余文字）:
-{{
-  "same_event": true/false,
-  "reason": "20字以内",
-  "confidence": "high/medium/low"
-}}"""
-
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}"
-        }
-        data = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": "你是一个严谨的舆情事件归并助手。"},
-                {"role": "user", "content": prompt}
-            ],
-            "temperature": 0.0,
-            "max_tokens": 200
-        }
-
-        self.logger.info("调用AI进行事件判重确认...")
-        resp = self._post_with_retry(self.api_url, headers, data, timeout=30)
-        result = resp.json()
-        content = result['choices'][0]['message']['content']
-        self.logger.info(f"AI事件判重返回: {content}")
-
-        parsed = json.loads(self._extract_json_block(content))
-        same_event = self._coerce_bool(parsed.get("same_event"))
-        if same_event is None:
-            raise ValueError("AI返回缺少/无法解析 same_event")
-        return {
-            "same_event": bool(same_event),
-            "reason": parsed.get("reason", "") or "",
-            "confidence": parsed.get("confidence", "low") or "low",
-        }
     
     def _analyze_with_zhipu(self, sentiment, hospital_name):
         """使用智谱AI分析"""
@@ -204,7 +77,12 @@ class SentimentAnalyzer:
             
             # 发送请求
             self.logger.info(f"调用智谱AI分析舆情...")
-            response = self._post_with_retry(self.api_url, headers, data, timeout=30)
+            response = requests.post(
+                self.api_url,
+                headers=headers,
+                json=data,
+                timeout=30
+            )
             response.raise_for_status()
             
             result = response.json()
@@ -289,7 +167,12 @@ class SentimentAnalyzer:
             }
 
             self.logger.info("调用DeepSeek分析舆情...")
-            response = self._post_with_retry(self.api_url, headers, data, timeout=30)
+            response = requests.post(
+                self.api_url,
+                headers=headers,
+                json=data,
+                timeout=30
+            )
             response.raise_for_status()
 
             result = response.json()
