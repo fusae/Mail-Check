@@ -1620,7 +1620,7 @@ const OpinionDashboard = () => {
       {exportReportOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
           <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm" onClick={() => !isGeneratingReport && setExportReportOpen(false)} />
-          <div className="relative max-h-[90vh] w-[96vw] max-w-6xl overflow-hidden rounded-3xl border border-indigo-500/30 bg-slate-900/95 p-6 shadow-2xl">
+          <div className="relative max-h-[90vh] w-[96vw] max-w-6xl overflow-visible rounded-3xl border border-indigo-500/30 bg-slate-900/95 p-6 shadow-2xl">
             <div className="flex items-center justify-between mb-6">
               <h3 className="text-lg font-semibold">生成医院舆情报告 v20260303-2</h3>
               <button onClick={() => !isGeneratingReport && setExportReportOpen(false)} className="rounded-full p-2 text-slate-400 hover:bg-slate-800">
@@ -1628,7 +1628,7 @@ const OpinionDashboard = () => {
               </button>
             </div>
 
-            <div className="grid max-h-[calc(90vh-160px)] gap-4 overflow-hidden lg:grid-cols-[340px_1fr]">
+            <div className="grid max-h-[calc(90vh-160px)] gap-4 overflow-visible lg:grid-cols-[340px_1fr]">
               <div className="space-y-4 overflow-y-auto pr-1">
                 <div>
                   <label className="block text-sm font-medium text-slate-300 mb-2">

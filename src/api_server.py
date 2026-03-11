@@ -298,6 +298,25 @@ def save_feedback_rules(feedback_id, rules, action):
     conn.close()
 
 
+@app.get("/")
+def index():
+    return jsonify({
+        "service": "Mail-Check API",
+        "status": "ok",
+        "docs": [
+            "/api/stats?range=7d",
+            "/api/opinions",
+            "/api/stats/trend?range=7d",
+            "/feedback",
+        ],
+    })
+
+
+@app.get("/health")
+def health():
+    return jsonify({"status": "ok"})
+
+
 @app.get("/api/opinions")
 def list_opinions():
     status = request.args.get("status", "active")

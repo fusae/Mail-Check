@@ -39,6 +39,10 @@
   color: #e2e8f0 !important;
 }
 
+.react-datepicker-popper {
+  z-index: 90 !important;
+}
+
 .react-datepicker__header {
   background: #1e293b !important;
   border-bottom: 1px solid #334155 !important;

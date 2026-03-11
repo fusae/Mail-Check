@@ -14,6 +14,7 @@ from collections import Counter
 import re
 import json
 import os
+import unicodedata
 
 import requests
 import yaml
@@ -32,6 +33,17 @@ try:
 except ImportError:
     DOCX_AVAILABLE = False
 
+try:
+    import matplotlib
+    matplotlib.use('Agg')  # 使用非交互式后端
+    import matplotlib.pyplot as plt
+    import matplotlib.font_manager as fm
+    from matplotlib import rcParams
+    plt.rcParams['axes.unicode_minus'] = False
+    MATPLOTLIB_AVAILABLE = True
+except ImportError:
+    MATPLOTLIB_AVAILABLE = False
+
 
 class EnhancedReportGenerator:
     """增强版舆情报告生成器"""
@@ -39,6 +51,12 @@ class EnhancedReportGenerator:
     def __init__(self):
         self.project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.ai_config = self._load_ai_config()
+        self.chart_font_family = self._configure_matplotlib_font()
+
+        # 创建图表输出目录
+        self.charts_dir = os.path.join(self.project_root, 'data', 'charts')
+        os.makedirs(self.charts_dir, exist_ok=True)
+
         self.platform_names = {
             '抖音': '抖音',
             'douyin': '抖音',
@@ -70,9 +88,9 @@ class EnhancedReportGenerator:
 
         # 风险等级映射
         self.risk_level_map = {
-            'high': '🔴 极高',
-            'medium': '🟠 高',
-            'low': '🟡 中'
+            'high': '极高',
+            'medium': '高',
+            'low': '中'
         }
 
     def _load_ai_config(self) -> Dict[str, Any]:
@@ -84,6 +102,64 @@ class EnhancedReportGenerator:
             return cfg.get("ai", {}) or {}
         except Exception:
             return {}
+
+    def _configure_matplotlib_font(self) -> Optional[str]:
+        """为服务器端图表选择可用的中文字体。"""
+        if not MATPLOTLIB_AVAILABLE:
+            return None
+
+        family_candidates = [
+            "Noto Sans CJK SC",
+            "Noto Sans CJK JP",
+            "Microsoft YaHei",
+            "SimHei",
+            "WenQuanYi Micro Hei",
+            "PingFang SC",
+            "Source Han Sans SC",
+            "Arial Unicode MS",
+        ]
+        file_candidates = [
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+            "/usr/share/fonts/truetype/arphic/ukai.ttc",
+            "/usr/share/fonts/truetype/arphic/uming.ttc",
+            "/System/Library/Fonts/PingFang.ttc",
+            "/System/Library/Fonts/STHeiti Light.ttc",
+            "/Library/Fonts/Arial Unicode.ttf",
+            "C:\\Windows\\Fonts\\msyh.ttc",
+            "C:\\Windows\\Fonts\\simhei.ttf",
+        ]
+
+        selected_family = None
+
+        try:
+            for font_path in file_candidates:
+                if not os.path.exists(font_path):
+                    continue
+                fm.fontManager.addfont(font_path)
+                selected_family = fm.FontProperties(fname=font_path).get_name()
+                if selected_family:
+                    break
+
+            if not selected_family:
+                installed_families = {font.name for font in fm.fontManager.ttflist}
+                for family in family_candidates:
+                    if family in installed_families:
+                        selected_family = family
+                        break
+        except Exception:
+            selected_family = None
+
+        fallback_families = ["DejaVu Sans", "Arial", "sans-serif"]
+        if selected_family:
+            plt.rcParams["font.sans-serif"] = [selected_family] + fallback_families
+        else:
+            plt.rcParams["font.sans-serif"] = fallback_families
+
+        plt.rcParams["axes.unicode_minus"] = False
+        return selected_family
 
     def normalize_platform(self, platform: str) -> str:
         """标准化平台名称"""
@@ -125,13 +201,20 @@ class EnhancedReportGenerator:
             'distribution': self._generate_distribution(df),
             'key_events': self._generate_key_events_enhanced(df),  # 增强版关键事件
             'sentiment': self._generate_sentiment_enhanced(df),  # 增强版情感分析
+            'sentiment_analysis_new': self._generate_sentiment_analysis_new(df),  # 新增：情感分析与舆情态势
+            'category_statistics': self._generate_category_statistics(df),  # 新增：舆情分类统计
             'risk_assessment': self._generate_risk_assessment_enhanced(df),  # 增强版风险评估
             'recommendations': self._generate_recommendations_enhanced(df),  # 增强版建议
             'impact_forecast': self._generate_impact_forecast(df),  # 新增：影响预测
+            'spread_forecast': self._generate_spread_forecast(df),  # 新增：风险传播预测
             'response_templates': self._generate_response_templates(df),  # 新增：应对模板
             'appendix': self._generate_appendix_enhanced(df),  # 增强版附录
             'raw_dataframe': df
         }
+
+        # 生成图表
+        chart_paths = self.generate_charts(report_data, hospital_name)
+        report_data['chart_paths'] = chart_paths
 
         return report_data
 
@@ -228,19 +311,19 @@ class EnhancedReportGenerator:
     def _assess_danger_level(self, df: pd.DataFrame) -> str:
         """评估危险级别"""
         if len(df) == 0:
-            return "🟢 无风险"
+            return "无风险"
 
         high_risk = len(df[df['严重程度'] == 'high'])
         avg_risk = df['风险分_数值'].mean()
 
         if avg_risk >= 90 or high_risk >= 5:
-            return "🔴 极高危险级别！"
+            return "极高危险级别"
         elif avg_risk >= 70 or high_risk >= 3:
-            return "🟠 高危险级别"
+            return "高危险级别"
         elif avg_risk >= 50 or high_risk >= 1:
-            return "🟡 中危险级别"
+            return "中危险级别"
         else:
-            return "🟢 低危险级别"
+            return "低危险级别"
 
     def _estimate_reach(self, df: pd.DataFrame) -> str:
         """估算影响人数（增强版）"""
@@ -306,11 +389,11 @@ class EnhancedReportGenerator:
         second_count = len(second_half)
 
         if second_count > first_count * 1.5:
-            return "📈 快速上升"
+            return "快速上升"
         elif second_count < first_count * 0.7:
-            return "📉 下降"
+            return "下降"
         else:
-            return "➡️ 平稳"
+            return "平稳"
 
     def _generate_overview(self, df: pd.DataFrame) -> Dict[str, Any]:
         """生成概述数据"""
@@ -538,7 +621,7 @@ class EnhancedReportGenerator:
             avg_risk = dept_df['风险分_数值'].mean()
             max_risk = dept_df['风险分_数值'].max()
 
-            risk_level = '🔴 极高' if avg_risk >= 80 else '🟠 高' if avg_risk >= 60 else '🟡 中'
+            risk_level = '极高' if avg_risk >= 80 else '高' if avg_risk >= 60 else '中'
 
             distribution[dept] = {
                 'count': int(count),
@@ -977,13 +1060,13 @@ class EnhancedReportGenerator:
 
                 if avg_risk >= 80:
                     level = 'red'
-                    level_text = '🔴 红色预警（极高风险）'
+                    level_text = '红色预警（极高风险）'
                 elif avg_risk >= 60:
                     level = 'orange'
-                    level_text = '🟠 橙色预警（高风险）'
+                    level_text = '橙色预警（高风险）'
                 else:
                     level = 'yellow'
-                    level_text = '🟡 黄色预警（中风险）'
+                    level_text = '黄色预警（中风险）'
 
                 risk_info = {
                     'department': dept,
@@ -1032,21 +1115,21 @@ class EnhancedReportGenerator:
         # 立即措施（24小时内）
         if avg_risk >= 80:
             immediate.extend([
-                "🚨 立即启动危机公关响应",
-                "📢 发布官方声明",
-                "🔍 启动内部调查",
-                "⚖️ 准备法律应对",
-                "🤝 主动与相关方沟通"
+                "立即启动危机公关响应",
+                "发布官方声明",
+                "启动内部调查",
+                "准备法律应对",
+                "主动与相关方沟通"
             ])
 
         # 短期措施（1周内）
         if avg_risk >= 60:
             short_term.extend([
-                "📊 公布调查结果",
-                "👥 处理相关责任人",
-                "🔧 整改医疗流程",
-                "📚 加强医患沟通培训",
-                "⚠️ 建立危机预警机制"
+                "公布调查结果",
+                "处理相关责任人",
+                "整改医疗流程",
+                "加强医患沟通培训",
+                "建立危机预警机制"
             ])
 
         # 长期措施（1-3个月）
@@ -1220,6 +1303,31 @@ class EnhancedReportGenerator:
             if s:
                 out.append(s)
         return out
+
+    def _sanitize_markdown_text(self, text: str) -> str:
+        """移除Markdown中的emoji和视觉类特殊符号，保留Markdown结构。"""
+        if not text:
+            return ""
+
+        cleaned = text.replace("\ufe0f", "").replace("\u200d", "")
+        out: List[str] = []
+
+        for ch in cleaned:
+            codepoint = ord(ch)
+            category = unicodedata.category(ch)
+
+            if (
+                0x1F000 <= codepoint <= 0x1FAFF
+                or 0x2600 <= codepoint <= 0x27BF
+                or 0x2B00 <= codepoint <= 0x2BFF
+                or 0x2190 <= codepoint <= 0x21FF
+                or category in {"So", "Sk", "Cs"}
+            ):
+                continue
+
+            out.append(ch)
+
+        return "".join(out)
 
     def _generate_monitoring_keywords(self, df: pd.DataFrame) -> List[str]:
         """生成监测关键词"""
@@ -1402,35 +1510,50 @@ class EnhancedReportGenerator:
         return path[:50]  # 最多显示50条
 
     def generate_markdown_report(self, report_data: Dict[str, Any]) -> str:
-        """生成Markdown格式报告（实战简报版）"""
+        """生成Markdown格式报告（简洁版）"""
         lines = []
+
+        # 封面
         lines.append(f"# {report_data['hospital_name']}舆情处置简报\n")
         lines.append(f"**统计周期：** {report_data['report_date_range']}")
         lines.append(f"**生成时间：** {report_data['generated_time']}")
+        lines.append(f"**报告类型：** 舆情监测分析报告\n")
         lines.append("---\n")
 
-        lines.extend(self._format_exec_summary_section(report_data))
-        lines.extend(self._format_top_events_section(report_data))
-        lines.extend(self._format_spread_snapshot_section(report_data))
-        lines.extend(self._format_keyword_cloud_section(report_data))
-        lines.extend(self._format_action_plan_section(report_data))
-        lines.extend(self._format_compact_appendix_section(report_data))
+        lines.extend(self._format_exec_summary_section(report_data))  # 1. 核心结论
+        lines.extend(self._format_spread_snapshot_section(report_data))  # 3→2. 传播快照
+        lines.extend(self._format_keyword_cloud_section(report_data))  # 4→3. 关键词云
+        lines.extend(self._format_sentiment_analysis_section(report_data))  # 6→4. 情感分析
+        lines.extend(self._format_category_statistics_section(report_data))  # 7→5. 分类统计
+        lines.extend(self._format_top_events_section(report_data))  # 2→6. 重点事件
+        lines.extend(self._format_action_plan_section(report_data))  # 5→7. 处置动作
+        lines.extend(self._format_spread_forecast_section(report_data))  # 8. 传播预测
+        lines.extend(self._format_compact_appendix_section(report_data))  # 9. 附录
 
         lines.append("\n---")
         lines.append("\n> 注：本简报用于快速决策，建议配合原文链接进行人工复核。\n")
-        return '\n'.join(lines)
+        return self._sanitize_markdown_text('\n'.join(lines))
 
     def _format_exec_summary_section(self, data: Dict[str, Any]) -> List[str]:
         lines = []
         summary = data.get('summary', {})
         overview = data.get('overview', {})
         platforms = list((overview.get('platform_distribution') or {}).keys())
-        lines.append("## 一、核心结论（先看这里）\n")
-        lines.append(f"- 当前风险等级：**{summary.get('danger_level', '未知')}**")
-        lines.append(f"- 负面舆情：**{summary.get('total_events', 0)}** 条，其中高危 **{summary.get('high_risk_events', 0)}** 条")
-        lines.append(f"- 传播峰值：**{summary.get('peak_time', '未知')}**；趋势：**{summary.get('trend', '未知')}**")
+
+        lines.append("## 一、核心结论\n")
+
+        danger_level = summary.get('danger_level', '未知')
+        lines.append(f"### 风险等级\n")
+        lines.append(f"**{danger_level}**\n")
+
+        lines.append(f"### 关键数据\n")
+        lines.append(f"- 负面舆情总数：{summary.get('total_events', 0)} 条")
+        lines.append(f"  - 高危事件：{summary.get('high_risk_events', 0)} 条")
+        lines.append(f"  - 中危事件：{summary.get('medium_risk_events', 0)} 条")
+        lines.append(f"- 传播峰值：{summary.get('peak_time', '未知')}")
+        lines.append(f"- 发展趋势：{summary.get('trend', '未知')}")
         if platforms:
-            lines.append(f"- 主要平台：**{', '.join(platforms[:3])}**")
+            lines.append(f"- 主要平台：{', '.join(platforms[:3])}")
         lines.append("")
         return lines
 
@@ -1439,7 +1562,7 @@ class EnhancedReportGenerator:
         df = data.get('raw_dataframe', pd.DataFrame())
         if df is None or len(df) == 0:
             return lines
-        lines.append("## 二、重点事件 Top 10（按风险与时间排序）\n")
+        lines.append("## 六、重点事件 Top 10（按风险与时间排序）\n")
         work = df.copy()
         work['风险分_数值'] = pd.to_numeric(work.get('风险分_数值', 0), errors='coerce').fillna(0)
         work = work.sort_values(by=['风险分_数值', '创建时间_解析'], ascending=[False, False], na_position='last')
@@ -1461,7 +1584,14 @@ class EnhancedReportGenerator:
     def _format_spread_snapshot_section(self, data: Dict[str, Any]) -> List[str]:
         lines = []
         dist = data.get('distribution', {})
-        lines.append("## 三、传播快照\n")
+        lines.append("## 二、传播快照\n")
+
+        # 插入平台分布饼图
+        chart_paths = data.get('chart_paths', {})
+        if chart_paths.get('platform_pie'):
+            lines.append(f"![平台分布]({chart_paths['platform_pie']})\n")
+
+        lines.append("### 传播时段分析\n")
         time_dist = dist.get('time_distribution', {}) or {}
         peak_hours = time_dist.get('peak_hours', [])[:3]
         if peak_hours:
@@ -1470,19 +1600,20 @@ class EnhancedReportGenerator:
         pattern = time_dist.get('time_pattern')
         if pattern:
             lines.append(f"- 时间规律：{pattern}")
+
+        lines.append("\n### 平台分布详情\n")
         p_dist = (dist.get('platform_distribution', {}) or {}).get('distribution', {}) or {}
         if p_dist:
             top_p = sorted(p_dist.items(), key=lambda kv: kv[1].get('count', 0), reverse=True)[:5]
-            lines.append("- 平台分布：")
             for name, info in top_p:
-                lines.append(f"  - {name}：{info.get('count', 0)}条（{info.get('percentage', 0)}%）")
+                lines.append(f"- {name}：{info.get('count', 0)}条 ({info.get('percentage', 0)}%)")
         lines.append("")
         return lines
 
     def _format_action_plan_section(self, data: Dict[str, Any]) -> List[str]:
         lines = []
         recs = data.get('recommendations', {}) or {}
-        lines.append("## 五、处置动作（可执行）\n")
+        lines.append("## 七、处置动作（可执行）\n")
         ai_summary = (recs.get('ai_summary') or '').strip()
         if ai_summary:
             lines.append(f"- AI判断：{ai_summary}")
@@ -1516,16 +1647,19 @@ class EnhancedReportGenerator:
         image = sentiment.get('wordcloud_image')
         keywords = sentiment.get('top_keywords', []) or []
 
-        lines.append("## 四、关键词云与高频词\n")
-        lines.append("### 4.1 关键词云图\n")
+        lines.append("## 三、关键词云与高频词\n")
+
+        lines.append("### 关键词云图\n")
         if image:
             lines.append(f"![关键词云图]({image})\n")
         else:
-            lines.append("- 关键词云图：本次未生成（可能缺少可用关键词或字体环境）\n")
+            lines.append("关键词云图未生成\n")
 
-        lines.append("### 4.2 高频词 Top 15\n")
+        lines.append("### 高频词 Top 15\n")
         if keywords:
-            for item in keywords[:15]:
+            lines.append("| 排名 | 关键词 | 出现次数 |")
+            lines.append("|:----:|--------|:--------:|")
+            for idx, item in enumerate(keywords[:15], 1):
                 if isinstance(item, dict):
                     kw = item.get('keyword', '')
                     cnt = item.get('count', 0)
@@ -1536,9 +1670,9 @@ class EnhancedReportGenerator:
                         continue
                 if not kw:
                     continue
-                lines.append(f"- {kw}（{cnt}次）")
+                lines.append(f"| {idx} | {kw} | {cnt}次 |")
         else:
-            lines.append("- 无可用高频词")
+            lines.append("无可用高频词")
         lines.append("")
         return lines
 
@@ -1546,7 +1680,7 @@ class EnhancedReportGenerator:
         lines = []
         appendix = data.get('appendix', {}) or {}
         event_list = appendix.get('event_list', [])[:20]
-        lines.append("## 六、附录（事件清单）\n")
+        lines.append("## 九、附录（事件清单）\n")
         if not event_list:
             lines.append("- 无")
             lines.append("")
@@ -1597,6 +1731,28 @@ class EnhancedReportGenerator:
                 i += 1
                 continue
 
+            # 图片
+            if line.strip().startswith("!["):
+                # 提取图片路径 ![alt](path)
+                import re
+                match = re.match(r'!\[([^\]]*)\]\(([^\)]+)\)', line.strip())
+                if match:
+                    alt_text = match.group(1)
+                    img_path = match.group(2)
+                    try:
+                        # 添加图片到Word文档
+                        if os.path.exists(img_path):
+                            doc.add_picture(img_path, width=Inches(5.5))
+                            # 添加图片说明
+                            if alt_text:
+                                p = doc.add_paragraph(alt_text)
+                                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    except Exception as e:
+                        # 如果图片加载失败，添加文本说明
+                        doc.add_paragraph(f"[图片: {alt_text}]")
+                i += 1
+                continue
+
             # 表格
             if line.strip().startswith("|"):
                 table_lines = []
@@ -1619,11 +1775,11 @@ class EnhancedReportGenerator:
                     table.style = 'Table Grid'
                     hdr_cells = table.rows[0].cells
                     for idx, value in enumerate(rows[0]):
-                        hdr_cells[idx].text = value
+                        self._add_formatted_text(hdr_cells[idx].paragraphs[0], value, bold=True)
                     for row in rows[1:]:
                         row_cells = table.add_row().cells
                         for idx, value in enumerate(row):
-                            row_cells[idx].text = value
+                            self._add_formatted_text(row_cells[idx].paragraphs[0], value)
                 continue
 
             # 标题
@@ -1646,14 +1802,33 @@ class EnhancedReportGenerator:
 
             # 列表
             if line.startswith("- ") or line.startswith("* "):
-                doc.add_paragraph(line[2:], style='List Bullet')
+                p = doc.add_paragraph(style='List Bullet')
+                self._add_formatted_text(p, line[2:])
                 i += 1
                 continue
 
             # 普通文本
             if line.strip():
-                doc.add_paragraph(line)
+                p = doc.add_paragraph()
+                self._add_formatted_text(p, line)
             i += 1
+
+    def _add_formatted_text(self, paragraph, text: str, bold: bool = False) -> None:
+        """添加带格式的文本到段落（处理粗体等markdown格式）"""
+        import re
+        # 处理粗体 **text**
+        parts = re.split(r'(\*\*[^\*]+\*\*)', text)
+
+        for part in parts:
+            if part.startswith('**') and part.endswith('**'):
+                # 粗体文本
+                run = paragraph.add_run(part[2:-2])
+                run.bold = True
+            elif part:
+                # 普通文本
+                run = paragraph.add_run(part)
+                if bold:
+                    run.bold = True
 
     def _format_summary_section(self, data: Dict[str, Any]) -> List[str]:
         """格式化概述部分"""
@@ -1772,7 +1947,7 @@ class EnhancedReportGenerator:
         lines.append("## 三、重点负面事件详析\n")
 
         for idx, event in enumerate(events[:3], 1):
-            risk_level = '🔴' if event['overview']['severity'] == 'high' else '🟠'
+            risk_level = '【高风险】' if event['overview']['severity'] == 'high' else '【中风险】'
             lines.append(f"### {risk_level} 事件{idx}：{event['title'][:50]}\n")
 
             # 概况
@@ -1903,11 +2078,11 @@ class EnhancedReportGenerator:
         risk_levels = risk.get('risk_levels', {})
 
         if risk_levels.get('red'):
-            lines.append(f"**🔴 红色预警（极高）：** {', '.join(risk_levels['red'])}")
+            lines.append(f"**红色预警（极高）：** {', '.join(risk_levels['red'])}")
         if risk_levels.get('orange'):
-            lines.append(f"**🟠 橙色预警（高）：** {', '.join(risk_levels['orange'])}")
+            lines.append(f"**橙色预警（高）：** {', '.join(risk_levels['orange'])}")
         if risk_levels.get('yellow'):
-            lines.append(f"**🟡 黄色预警（中）：** {', '.join(risk_levels['yellow'])}")
+            lines.append(f"**黄色预警（中）：** {', '.join(risk_levels['yellow'])}")
 
         lines.append("\n---\n")
 
@@ -2060,3 +2235,877 @@ class EnhancedReportGenerator:
         lines.append("\n---\n")
 
         return lines
+
+    def _generate_sentiment_analysis_new(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """
+        新增功能1：情感分析与舆情态势
+        - 正面/中性/负面舆情的比例分布
+        - 情绪强度评分
+        - 舆情热度趋势图数据
+        """
+        if len(df) == 0:
+            return {
+                'sentiment_distribution': {},
+                'emotion_intensity': {},
+                'trend_data': [],
+                'sentiment_ratio': {}
+            }
+
+        # 1. 情感倾向分类（正面/中性/负面）
+        sentiment_counts = {'positive': 0, 'neutral': 0, 'negative': 0}
+
+        for _, row in df.iterrows():
+            risk_score = row.get('风险分_数值', 0)
+            severity = row.get('严重程度', 'low')
+
+            # 根据风险分和严重程度判断情感倾向
+            if risk_score >= 70 or severity == 'high':
+                sentiment_counts['negative'] += 1
+            elif risk_score >= 40 or severity == 'medium':
+                sentiment_counts['neutral'] += 1
+            else:
+                sentiment_counts['positive'] += 1
+
+        total = len(df)
+        sentiment_ratio = {
+            'negative': round(sentiment_counts['negative'] / total * 100, 1) if total > 0 else 0,
+            'neutral': round(sentiment_counts['neutral'] / total * 100, 1) if total > 0 else 0,
+            'positive': round(sentiment_counts['positive'] / total * 100, 1) if total > 0 else 0
+        }
+
+        # 2. 情绪强度评分（基于关键词和风险分）
+        emotion_intensity = {}
+        all_content = ' '.join(df.get('标题', pd.Series()).fillna('') + ' ' + df.get('内容', pd.Series()).fillna(''))
+
+        for emotion, keywords in self.emotion_keywords.items():
+            intensity = 0
+            if JIEBA_AVAILABLE:
+                words = list(jieba.cut(all_content))
+                count = sum(1 for word in words if word in keywords)
+                # 归一化到0-100
+                intensity = min(100, count * 5)
+            emotion_intensity[emotion] = intensity
+
+        # 3. 舆情热度趋势图数据（按日期统计）
+        daily_data = (
+            df.groupby('日期', as_index=False)
+            .agg(
+                event_count=('风险分_数值', 'count'),
+                avg_risk_score=('风险分_数值', 'mean'),
+                max_risk_score=('风险分_数值', 'max'),
+            )
+        )
+
+        trend_data = []
+        for _, row in daily_data.iterrows():
+            date = row['日期']
+            count = int(row['event_count'])
+            avg_risk = round(row['avg_risk_score'], 1)
+            max_risk = int(row['max_risk_score'])
+
+            # 确保日期是字符串格式
+            if hasattr(date, 'strftime'):
+                date_str = date.strftime('%Y-%m-%d')
+            elif hasattr(date, 'isoformat'):
+                date_str = date.isoformat()
+            else:
+                date_str = str(date)
+
+            trend_data.append({
+                'date': date_str,
+                'count': count,
+                'avg_risk_score': avg_risk,
+                'max_risk_score': max_risk,
+                'heat_index': count * avg_risk / 10  # 热度指数 = 数量 × 平均风险分 / 10
+            })
+
+        # 4. 公众情绪指数（综合指标）
+        public_emotion_index = round(
+            sentiment_ratio['negative'] * 1.0 +
+            sentiment_ratio['neutral'] * 0.5 +
+            sentiment_ratio['positive'] * 0.1,
+            1
+        )
+
+        return {
+            'sentiment_distribution': sentiment_counts,
+            'sentiment_ratio': sentiment_ratio,
+            'emotion_intensity': emotion_intensity,
+            'trend_data': trend_data,
+            'public_emotion_index': public_emotion_index,
+            'emotion_level': self._assess_emotion_level(public_emotion_index)
+        }
+
+    def _assess_emotion_level(self, index: float) -> str:
+        """评估情绪等级"""
+        if index >= 80:
+            return "极度负面"
+        elif index >= 60:
+            return "负面"
+        elif index >= 40:
+            return "偏负面"
+        elif index >= 20:
+            return "中性"
+        else:
+            return "正面"
+
+    def _generate_category_statistics(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """
+        新增功能3：舆情分类统计
+        - 按问题类型分类统计（服务、收费、环境、医疗质量等）
+        - 饼图/柱状图数据
+        """
+        if len(df) == 0:
+            return {
+                'categories': {},
+                'chart_data': [],
+                'top_categories': []
+            }
+
+        # 定义分类规则
+        category_rules = {
+            '医疗质量': ['死亡', '去世', '抢救', '手术', '误诊', '漏诊', '医疗事故', '并发症'],
+            '服务态度': ['态度', '服务', '冷漠', '不耐烦', '推诿', '拒诊', '不会看病'],
+            '收费问题': ['收费', '费用', '贵', '乱收费', '重复收费', '价格', '住院费'],
+            '环境卫生': ['环境', '卫生', '脏', '垃圾', '厕所', '异味', '清洁'],
+            '流程问题': ['等待', '排队', '时间长', '挂号', '预约', '流程'],
+            '无障碍设施': ['无障碍', '视障', '残疾', '盲道', '轮椅', '导盲'],
+            '隐私保护': ['隐私', '泄露', '病历', '信息', '个人信息'],
+            '其他': []
+        }
+
+        # 分类统计
+        category_counts = {cat: 0 for cat in category_rules.keys()}
+        category_details = {cat: [] for cat in category_rules.keys()}
+
+        for _, row in df.iterrows():
+            content = str(row.get('标题', '')) + str(row.get('内容', '')) + str(row.get('警示理由', ''))
+            risk_score = row.get('风险分_数值', 0)
+
+            matched = False
+            for category, keywords in category_rules.items():
+                if category == '其他':
+                    continue
+                if any(keyword in content for keyword in keywords):
+                    category_counts[category] += 1
+                    category_details[category].append({
+                        'title': row.get('标题', '')[:30],
+                        'risk_score': int(risk_score),
+                        'date': row.get('日期_字符串', '')
+                    })
+                    matched = True
+                    break
+
+            if not matched:
+                category_counts['其他'] += 1
+                category_details['其他'].append({
+                    'title': row.get('标题', '')[:30],
+                    'risk_score': int(risk_score),
+                    'date': row.get('日期_字符串', '')
+                })
+
+        # 计算百分比和平均风险分
+        total = len(df)
+        categories = {}
+        for cat, count in category_counts.items():
+            if count > 0:
+                details = category_details[cat]
+                avg_risk = sum(d['risk_score'] for d in details) / len(details) if details else 0
+
+                categories[cat] = {
+                    'count': count,
+                    'percentage': round(count / total * 100, 1),
+                    'avg_risk_score': round(avg_risk, 1),
+                    'severity': self._get_category_severity(avg_risk),
+                    'details': details[:5]  # 只保留前5个示例
+                }
+
+        # 生成图表数据
+        chart_data = []
+        for cat, info in sorted(categories.items(), key=lambda x: x[1]['count'], reverse=True):
+            chart_data.append({
+                'category': cat,
+                'count': info['count'],
+                'percentage': info['percentage'],
+                'color': self._get_category_color(cat)
+            })
+
+        # Top分类
+        top_categories = sorted(
+            [(cat, info) for cat, info in categories.items()],
+            key=lambda x: x[1]['count'],
+            reverse=True
+        )[:5]
+
+        return {
+            'categories': categories,
+            'chart_data': chart_data,
+            'top_categories': [{'name': cat, **info} for cat, info in top_categories],
+            'total_categories': len([c for c in categories.values() if c['count'] > 0])
+        }
+
+    def _get_category_severity(self, avg_risk: float) -> str:
+        """获取分类严重程度"""
+        if avg_risk >= 80:
+            return '极高'
+        elif avg_risk >= 60:
+            return '高'
+        elif avg_risk >= 40:
+            return '中'
+        else:
+            return '低'
+
+    def _get_category_color(self, category: str) -> str:
+        """获取分类对应的颜色（用于图表）"""
+        color_map = {
+            '医疗质量': '#FF4444',
+            '服务态度': '#FF8800',
+            '收费问题': '#FFBB33',
+            '环境卫生': '#00C851',
+            '流程问题': '#33B5E5',
+            '无障碍设施': '#AA66CC',
+            '隐私保护': '#FF6F00',
+            '其他': '#999999'
+        }
+        return color_map.get(category, '#999999')
+
+    def _generate_spread_forecast(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """
+        新增功能6：风险传播预测
+        - 基于当前趋势的未来3-7天传播预测
+        - 可能引发二次传播的风险点
+        - 敏感时间节点提醒
+        """
+        if len(df) == 0:
+            return {
+                'forecast_3days': {},
+                'forecast_7days': {},
+                'secondary_risks': [],
+                'sensitive_dates': []
+            }
+
+        # 1. 计算传播速度和趋势
+        df_sorted = df.sort_values('创建时间_解析')
+        if len(df_sorted) < 2:
+            spread_rate = 0
+        else:
+            time_span = (df_sorted.iloc[-1]['创建时间_解析'] - df_sorted.iloc[0]['创建时间_解析']).total_seconds() / 86400  # 天数
+            spread_rate = len(df) / max(time_span, 1)  # 每天新增数量
+
+        # 2. 预测未来3天和7天
+        current_count = len(df)
+        avg_risk = df['风险分_数值'].mean()
+
+        # 根据趋势调整预测系数
+        trend = self._analyze_trend(df)
+        if '上升' in trend:
+            growth_factor = 1.5
+        elif '下降' in trend:
+            growth_factor = 0.7
+        else:
+            growth_factor = 1.0
+
+        forecast_3days = {
+            'predicted_new_events': int(spread_rate * 3 * growth_factor),
+            'predicted_total_events': int(current_count + spread_rate * 3 * growth_factor),
+            'predicted_avg_risk': round(avg_risk * (1.1 if '上升' in trend else 0.95), 1),
+            'confidence': '中' if len(df) >= 5 else '低'
+        }
+
+        forecast_7days = {
+            'predicted_new_events': int(spread_rate * 7 * growth_factor),
+            'predicted_total_events': int(current_count + spread_rate * 7 * growth_factor),
+            'predicted_avg_risk': round(avg_risk * (1.2 if '上升' in trend else 0.9), 1),
+            'confidence': '中' if len(df) >= 5 else '低'
+        }
+
+        # 3. 识别二次传播风险点
+        secondary_risks = []
+
+        # 高风险事件可能引发二次传播
+        high_risk_events = df[df['风险分_数值'] >= 80]
+        if len(high_risk_events) > 0:
+            secondary_risks.append({
+                'risk_type': '高风险事件发酵',
+                'description': f'存在{len(high_risk_events)}个高风险事件，可能引发媒体关注和二次传播',
+                'probability': '高',
+                'impact': '严重'
+            })
+
+        # 多平台传播风险
+        platforms = df['来源_标准'].nunique()
+        if platforms >= 3:
+            secondary_risks.append({
+                'risk_type': '跨平台传播',
+                'description': f'舆情已在{platforms}个平台传播，存在跨平台发酵风险',
+                'probability': '中',
+                'impact': '较大'
+            })
+
+        # 集中爆发风险
+        daily_counts = df.groupby('日期').size()
+        if len(daily_counts) > 0 and daily_counts.max() >= len(df) * 0.5:
+            secondary_risks.append({
+                'risk_type': '集中爆发',
+                'description': '舆情在短时间内集中爆发，可能持续发酵',
+                'probability': '高',
+                'impact': '严重'
+            })
+
+        # 情感极化风险
+        negative_ratio = len(df[df['风险分_数值'] >= 70]) / len(df) if len(df) > 0 else 0
+        if negative_ratio >= 0.7:
+            secondary_risks.append({
+                'risk_type': '情感极化',
+                'description': f'{negative_ratio*100:.0f}%的舆情为高负面，公众情绪极化严重',
+                'probability': '高',
+                'impact': '严重'
+            })
+
+        # 4. 敏感时间节点提醒
+        sensitive_dates = []
+        now = datetime.now()
+
+        # 周末（舆情容易发酵）
+        days_to_weekend = (5 - now.weekday()) % 7
+        if days_to_weekend <= 3:
+            weekend_date = now + timedelta(days=days_to_weekend)
+            sensitive_dates.append({
+                'date': weekend_date.strftime('%Y-%m-%d'),
+                'type': '周末',
+                'reason': '周末期间用户活跃度高，舆情容易发酵传播',
+                'suggestion': '加强周末舆情监控'
+            })
+
+        # 节假日（需要根据实际情况添加）
+        # 这里简化处理，可以根据需要添加具体节假日判断
+
+        # 月初/月末（医院就诊高峰）
+        if now.day <= 5:
+            sensitive_dates.append({
+                'date': now.strftime('%Y-%m-%d'),
+                'type': '月初',
+                'reason': '月初就诊高峰期，医疗纠纷风险增加',
+                'suggestion': '加强医患沟通，提升服务质量'
+            })
+        elif now.day >= 25:
+            sensitive_dates.append({
+                'date': now.strftime('%Y-%m-%d'),
+                'type': '月末',
+                'reason': '月末就诊高峰期，医疗纠纷风险增加',
+                'suggestion': '加强医患沟通，提升服务质量'
+            })
+
+        # 5. 传播路径预测
+        spread_path_prediction = self._predict_spread_path(df)
+
+        return {
+            'forecast_3days': forecast_3days,
+            'forecast_7days': forecast_7days,
+            'secondary_risks': secondary_risks,
+            'sensitive_dates': sensitive_dates,
+            'spread_path_prediction': spread_path_prediction,
+            'overall_trend': trend,
+            'spread_rate': round(spread_rate, 2)
+        }
+
+    def _predict_spread_path(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """预测传播路径"""
+        if len(df) == 0:
+            return {}
+
+        # 分析当前传播路径
+        platforms = df['来源_标准'].value_counts().to_dict()
+
+        # 预测可能的传播路径
+        predicted_platforms = []
+
+        if '抖音' in platforms or '微博' in platforms:
+            predicted_platforms.append({
+                'platform': '传统媒体',
+                'probability': '中',
+                'reason': '社交媒体热度高，可能引起传统媒体关注'
+            })
+
+        if len(platforms) >= 2:
+            predicted_platforms.append({
+                'platform': '其他社交平台',
+                'probability': '高',
+                'reason': '已在多平台传播，可能扩散到更多平台'
+            })
+
+        return {
+            'current_platforms': list(platforms.keys()),
+            'predicted_platforms': predicted_platforms,
+            'spread_pattern': '病毒式传播' if len(platforms) >= 3 else '线性传播'
+        }
+
+    def _format_sentiment_analysis_section(self, data: Dict[str, Any]) -> List[str]:
+        """格式化情感分析与舆情态势部分"""
+        lines = []
+        sentiment_new = data.get('sentiment_analysis_new', {})
+
+        if not sentiment_new:
+            return lines
+
+        lines.append("## 四、情感分析与舆情态势\n")
+
+        # 插入情感倾向饼图
+        chart_paths = data.get('chart_paths', {})
+        if chart_paths.get('sentiment_pie'):
+            lines.append(f"![情感倾向分布]({chart_paths['sentiment_pie']})\n")
+
+        # 1. 情感倾向分布
+        lines.append("### 情感倾向分布\n")
+        sentiment_ratio = sentiment_new.get('sentiment_ratio', {})
+        sentiment_counts = sentiment_new.get('sentiment_distribution', {})
+
+        if sentiment_ratio:
+            lines.append("| 情感类型 | 数量 | 占比 | 说明 |")
+            lines.append("|---------|------|------|------|")
+            lines.append(f"| 负面 | {sentiment_counts.get('negative', 0)}条 | {sentiment_ratio.get('negative', 0)}% | 高风险舆情 |")
+            lines.append(f"| 中性 | {sentiment_counts.get('neutral', 0)}条 | {sentiment_ratio.get('neutral', 0)}% | 中等风险舆情 |")
+            lines.append(f"| 正面 | {sentiment_counts.get('positive', 0)}条 | {sentiment_ratio.get('positive', 0)}% | 低风险舆情 |")
+            lines.append("")
+
+        # 2. 公众情绪指数
+        emotion_index = sentiment_new.get('public_emotion_index', 0)
+        emotion_level = sentiment_new.get('emotion_level', '未知')
+        # 去掉emoji
+        emotion_level_clean = emotion_level.replace('🔴', '').replace('🟠', '').replace('🟡', '').replace('🟢', '').replace('🔵', '').strip()
+        lines.append(f"**公众情绪指数：** {emotion_index}/100 - {emotion_level_clean}\n")
+
+        # 3. 情绪强度分析
+        emotion_intensity = sentiment_new.get('emotion_intensity', {})
+        if emotion_intensity:
+            lines.append("### 情绪强度分析\n")
+            lines.append("| 情绪类型 | 强度值 | 等级 |")
+            lines.append("|---------|--------|------|")
+            for emotion, intensity in sorted(emotion_intensity.items(), key=lambda x: x[1], reverse=True):
+                level = "高" if intensity >= 60 else "中" if intensity >= 30 else "低"
+                lines.append(f"| {emotion} | {intensity}/100 | {level} |")
+            lines.append("")
+
+        # 4. 舆情热度趋势
+        trend_data = sentiment_new.get('trend_data', [])
+        if trend_data:
+            lines.append("### 舆情热度趋势\n")
+
+            # 插入趋势折线图
+            chart_paths = data.get('chart_paths', {})
+            if chart_paths.get('trend_line'):
+                lines.append(f"![舆情热度趋势]({chart_paths['trend_line']})\n")
+            lines.append("| 日期 | 舆情数量 | 平均风险分 | 热度指数 |")
+            lines.append("|------|---------|-----------|---------|")
+            for item in trend_data[-7:]:  # 只显示最近7天
+                lines.append(f"| {item['date']} | {item['count']}条 | {item['avg_risk_score']} | {item['heat_index']:.1f} |")
+            lines.append("")
+
+        lines.append("---\n")
+        return lines
+
+    def _format_category_statistics_section(self, data: Dict[str, Any]) -> List[str]:
+        """格式化舆情分类统计部分"""
+        lines = []
+        category_stats = data.get('category_statistics', {})
+
+        if not category_stats:
+            return lines
+
+        lines.append("## 五、舆情分类统计\n")
+
+        # 插入问题类型饼图
+        chart_paths = data.get('chart_paths', {})
+        if chart_paths.get('category_pie'):
+            lines.append(f"![问题类型分布]({chart_paths['category_pie']})\n")
+
+        # 1. 分类概览
+        categories = category_stats.get('categories', {})
+        total_categories = category_stats.get('total_categories', 0)
+
+        lines.append(f"**问题类型总数：** {total_categories}类\n")
+
+        # 2. 分类详情表格
+        lines.append("### 问题类型分布\n")
+        if categories:
+            lines.append("| 问题类型 | 数量 | 占比 | 平均风险分 | 严重程度 |")
+            lines.append("|---------|------|------|-----------|---------|")
+
+            for cat, info in sorted(categories.items(), key=lambda x: x[1]['count'], reverse=True):
+                lines.append(f"| {cat} | {info['count']}条 | {info['percentage']}% | {info['avg_risk_score']} | {info['severity']} |")
+            lines.append("")
+
+        # 3. Top问题类型
+        top_categories = category_stats.get('top_categories', [])
+        if top_categories:
+            lines.append("### 重点关注类型\n")
+            for idx, cat_info in enumerate(top_categories[:3], 1):
+                name = cat_info.get('name', '未知')
+                count = cat_info.get('count', 0)
+                avg_risk = cat_info.get('avg_risk_score', 0)
+                details = cat_info.get('details', [])
+                
+                lines.append(f"**{idx}. {name}** ({count}条，平均风险分{avg_risk})")
+                if details:
+                    lines.append("   - 典型案例：")
+                    for detail in details[:3]:
+                        lines.append(f"     - {detail['title']} (风险分:{detail['risk_score']})")
+                lines.append("")
+
+        lines.append("---\n")
+        return lines
+
+    def _format_spread_forecast_section(self, data: Dict[str, Any]) -> List[str]:
+        """格式化风险传播预测部分"""
+        lines = []
+        forecast = data.get('spread_forecast', {})
+
+        if not forecast:
+            return lines
+
+        lines.append("## 八、风险传播预测\n")
+        
+        # 1. 传播趋势
+        overall_trend = forecast.get('overall_trend', '未知')
+        spread_rate = forecast.get('spread_rate', 0)
+        lines.append(f"**当前传播趋势：** {overall_trend}")
+        lines.append(f"**传播速度：** {spread_rate}条/天\n")
+        
+        # 2. 未来3天预测
+        forecast_3days = forecast.get('forecast_3days', {})
+        if forecast_3days:
+            lines.append("### 8.1 未来3天预测\n")
+            lines.append("| 指标 | 预测值 | 置信度 |")
+            lines.append("|------|--------|--------|")
+            lines.append(f"| 新增舆情数量 | {forecast_3days.get('predicted_new_events', 0)}条 | {forecast_3days.get('confidence', '低')} |")
+            lines.append(f"| 累计舆情总数 | {forecast_3days.get('predicted_total_events', 0)}条 | {forecast_3days.get('confidence', '低')} |")
+            lines.append(f"| 预测平均风险分 | {forecast_3days.get('predicted_avg_risk', 0)} | {forecast_3days.get('confidence', '低')} |")
+            lines.append("")
+        
+        # 3. 未来7天预测
+        forecast_7days = forecast.get('forecast_7days', {})
+        if forecast_7days:
+            lines.append("### 8.2 未来7天预测\n")
+            lines.append("| 指标 | 预测值 | 置信度 |")
+            lines.append("|------|--------|--------|")
+            lines.append(f"| 新增舆情数量 | {forecast_7days.get('predicted_new_events', 0)}条 | {forecast_7days.get('confidence', '低')} |")
+            lines.append(f"| 累计舆情总数 | {forecast_7days.get('predicted_total_events', 0)}条 | {forecast_7days.get('confidence', '低')} |")
+            lines.append(f"| 预测平均风险分 | {forecast_7days.get('predicted_avg_risk', 0)} | {forecast_7days.get('confidence', '低')} |")
+            lines.append("")
+        
+        # 4. 二次传播风险点
+        secondary_risks = forecast.get('secondary_risks', [])
+        if secondary_risks:
+            lines.append("### 8.3 二次传播风险点\n")
+            lines.append("| 风险类型 | 描述 | 发生概率 | 影响程度 |")
+            lines.append("|---------|------|---------|---------|")
+            for risk in secondary_risks:
+                lines.append(f"| {risk['risk_type']} | {risk['description']} | {risk['probability']} | {risk['impact']} |")
+            lines.append("")
+        
+        # 5. 敏感时间节点
+        sensitive_dates = forecast.get('sensitive_dates', [])
+        if sensitive_dates:
+            lines.append("### 8.4 敏感时间节点提醒\n")
+            for date_info in sensitive_dates:
+                lines.append(f"- **{date_info['date']}** ({date_info['type']})")
+                lines.append(f"  - 原因：{date_info['reason']}")
+                lines.append(f"  - 建议：{date_info['suggestion']}")
+            lines.append("")
+        
+        # 6. 传播路径预测
+        spread_path = forecast.get('spread_path_prediction', {})
+        if spread_path:
+            lines.append("### 8.5 传播路径预测\n")
+            current_platforms = spread_path.get('current_platforms', [])
+            predicted_platforms = spread_path.get('predicted_platforms', [])
+            spread_pattern = spread_path.get('spread_pattern', '未知')
+            
+            lines.append(f"**当前传播平台：** {', '.join(current_platforms)}")
+            lines.append(f"**传播模式：** {spread_pattern}\n")
+            
+            if predicted_platforms:
+                lines.append("**可能扩散平台：**")
+                for platform in predicted_platforms:
+                    lines.append(f"- {platform['platform']} (概率:{platform['probability']}) - {platform['reason']}")
+                lines.append("")
+        
+        lines.append("---\n")
+        return lines
+
+    def generate_charts(self, report_data: Dict[str, Any], hospital_name: str) -> Dict[str, str]:
+        """
+        生成所有图表并返回图片路径
+        
+        返回：
+        {
+            'sentiment_pie': '情感倾向饼图路径',
+            'category_pie': '问题类型饼图路径',
+            'trend_line': '舆情热度趋势图路径',
+            'platform_pie': '平台分布饼图路径'
+        }
+        """
+        if not MATPLOTLIB_AVAILABLE:
+            return {}
+        
+        chart_paths = {}
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        
+        # 1. 情感倾向饼图
+        sentiment_path = self._generate_sentiment_pie_chart(
+            report_data, 
+            os.path.join(self.charts_dir, f'sentiment_pie_{timestamp}.png')
+        )
+        if sentiment_path:
+            chart_paths['sentiment_pie'] = sentiment_path
+        
+        # 2. 问题类型饼图
+        category_path = self._generate_category_pie_chart(
+            report_data,
+            os.path.join(self.charts_dir, f'category_pie_{timestamp}.png')
+        )
+        if category_path:
+            chart_paths['category_pie'] = category_path
+        
+        # 3. 舆情热度趋势图
+        trend_path = self._generate_trend_line_chart(
+            report_data,
+            os.path.join(self.charts_dir, f'trend_line_{timestamp}.png')
+        )
+        if trend_path:
+            chart_paths['trend_line'] = trend_path
+        
+        # 4. 平台分布饼图
+        platform_path = self._generate_platform_pie_chart(
+            report_data,
+            os.path.join(self.charts_dir, f'platform_pie_{timestamp}.png')
+        )
+        if platform_path:
+            chart_paths['platform_pie'] = platform_path
+        
+        return chart_paths
+
+    def _generate_sentiment_pie_chart(self, report_data: Dict[str, Any], output_path: str) -> str:
+        """生成情感倾向饼图"""
+        try:
+            sentiment_data = report_data.get('sentiment_analysis_new', {})
+            sentiment_counts = sentiment_data.get('sentiment_distribution', {})
+            
+            if not sentiment_counts:
+                return None
+            
+            # 准备数据
+            labels = []
+            sizes = []
+            colors = []
+            
+            if sentiment_counts.get('negative', 0) > 0:
+                labels.append('负面')
+                sizes.append(sentiment_counts['negative'])
+                colors.append('#FF4444')
+            
+            if sentiment_counts.get('neutral', 0) > 0:
+                labels.append('中性')
+                sizes.append(sentiment_counts['neutral'])
+                colors.append('#FFBB33')
+            
+            if sentiment_counts.get('positive', 0) > 0:
+                labels.append('正面')
+                sizes.append(sentiment_counts['positive'])
+                colors.append('#00C851')
+            
+            if not sizes:
+                return None
+            
+            # 创建图表
+            fig, ax = plt.subplots(figsize=(8, 6))
+            wedges, texts, autotexts = ax.pie(
+                sizes, 
+                labels=labels, 
+                colors=colors,
+                autopct='%1.1f%%',
+                startangle=90,
+                textprops={'fontsize': 12}
+            )
+            
+            # 设置标题
+            ax.set_title('情感倾向分布', fontsize=16, fontweight='bold', pad=20)
+            
+            # 美化百分比文字
+            for autotext in autotexts:
+                autotext.set_color('white')
+                autotext.set_fontweight('bold')
+                autotext.set_fontsize(11)
+            
+            plt.tight_layout()
+            plt.savefig(output_path, dpi=150, bbox_inches='tight')
+            plt.close()
+            
+            return output_path
+        except Exception as e:
+            print(f"生成情感倾向饼图失败: {e}")
+            return None
+
+    def _generate_category_pie_chart(self, report_data: Dict[str, Any], output_path: str) -> str:
+        """生成问题类型饼图"""
+        try:
+            category_data = report_data.get('category_statistics', {})
+            categories = category_data.get('categories', {})
+            
+            if not categories:
+                return None
+            
+            # 准备数据（只显示前6个类型）
+            sorted_categories = sorted(categories.items(), key=lambda x: x[1]['count'], reverse=True)[:6]
+            
+            labels = []
+            sizes = []
+            colors = []
+            
+            color_map = {
+                '医疗质量': '#FF4444',
+                '服务态度': '#FF8800',
+                '收费问题': '#FFBB33',
+                '环境卫生': '#00C851',
+                '流程问题': '#33B5E5',
+                '无障碍设施': '#AA66CC',
+                '隐私保护': '#FF6F00',
+                '其他': '#999999'
+            }
+            
+            for cat_name, cat_info in sorted_categories:
+                labels.append(f"{cat_name}\n({cat_info['count']}条)")
+                sizes.append(cat_info['count'])
+                colors.append(color_map.get(cat_name, '#999999'))
+            
+            # 创建图表
+            fig, ax = plt.subplots(figsize=(10, 7))
+            wedges, texts, autotexts = ax.pie(
+                sizes,
+                labels=labels,
+                colors=colors,
+                autopct='%1.1f%%',
+                startangle=90,
+                textprops={'fontsize': 10}
+            )
+            
+            # 设置标题
+            ax.set_title('问题类型分布', fontsize=16, fontweight='bold', pad=20)
+            
+            # 美化百分比文字
+            for autotext in autotexts:
+                autotext.set_color('white')
+                autotext.set_fontweight('bold')
+                autotext.set_fontsize(10)
+            
+            plt.tight_layout()
+            plt.savefig(output_path, dpi=150, bbox_inches='tight')
+            plt.close()
+            
+            return output_path
+        except Exception as e:
+            print(f"生成问题类型饼图失败: {e}")
+            return None
+
+    def _generate_trend_line_chart(self, report_data: Dict[str, Any], output_path: str) -> str:
+        """生成舆情热度趋势折线图"""
+        try:
+            sentiment_data = report_data.get('sentiment_analysis_new', {})
+            trend_data = sentiment_data.get('trend_data', [])
+            
+            if not trend_data or len(trend_data) < 2:
+                return None
+            
+            # 准备数据
+            dates = [item['date'] for item in trend_data]
+            counts = [item['count'] for item in trend_data]
+            avg_risks = [item['avg_risk_score'] for item in trend_data]
+            
+            # 创建图表
+            fig, ax1 = plt.subplots(figsize=(12, 6))
+            
+            # 左Y轴：舆情数量
+            color1 = '#2196F3'
+            ax1.set_xlabel('日期', fontsize=12)
+            ax1.set_ylabel('舆情数量（条）', color=color1, fontsize=12)
+            line1 = ax1.plot(dates, counts, color=color1, marker='o', linewidth=2, 
+                            markersize=6, label='舆情数量')
+            ax1.tick_params(axis='y', labelcolor=color1)
+            ax1.grid(True, alpha=0.3, linestyle='--')
+            
+            # 右Y轴：平均风险分
+            ax2 = ax1.twinx()
+            color2 = '#FF5722'
+            ax2.set_ylabel('平均风险分', color=color2, fontsize=12)
+            line2 = ax2.plot(dates, avg_risks, color=color2, marker='s', linewidth=2,
+                            markersize=6, linestyle='--', label='平均风险分')
+            ax2.tick_params(axis='y', labelcolor=color2)
+            
+            # 设置标题
+            plt.title('舆情热度趋势', fontsize=16, fontweight='bold', pad=20)
+            
+            # 旋转X轴标签
+            plt.xticks(rotation=45, ha='right')
+            
+            # 添加图例
+            lines = line1 + line2
+            labels = [l.get_label() for l in lines]
+            ax1.legend(lines, labels, loc='upper left', fontsize=10)
+            
+            plt.tight_layout()
+            plt.savefig(output_path, dpi=150, bbox_inches='tight')
+            plt.close()
+            
+            return output_path
+        except Exception as e:
+            print(f"生成舆情热度趋势图失败: {e}")
+            return None
+
+    def _generate_platform_pie_chart(self, report_data: Dict[str, Any], output_path: str) -> str:
+        """生成平台分布饼图"""
+        try:
+            overview = report_data.get('overview', {})
+            platform_dist = overview.get('platform_distribution', {})
+            
+            if not platform_dist:
+                return None
+            
+            # 准备数据
+            labels = []
+            sizes = []
+            colors = ['#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0', '#9966FF', '#FF9F40']
+            
+            for idx, (platform, count) in enumerate(sorted(platform_dist.items(), 
+                                                          key=lambda x: x[1], 
+                                                          reverse=True)):
+                labels.append(f"{platform}\n({count}条)")
+                sizes.append(count)
+            
+            # 创建图表
+            fig, ax = plt.subplots(figsize=(9, 7))
+            wedges, texts, autotexts = ax.pie(
+                sizes,
+                labels=labels,
+                colors=colors[:len(sizes)],
+                autopct='%1.1f%%',
+                startangle=90,
+                textprops={'fontsize': 11}
+            )
+            
+            # 设置标题
+            ax.set_title('平台分布', fontsize=16, fontweight='bold', pad=20)
+            
+            # 美化百分比文字
+            for autotext in autotexts:
+                autotext.set_color('white')
+                autotext.set_fontweight('bold')
+                autotext.set_fontsize(11)
+            
+            plt.tight_layout()
+            plt.savefig(output_path, dpi=150, bbox_inches='tight')
+            plt.close()
+            
+            return output_path
+        except Exception as e:
+            print(f"生成平台分布饼图失败: {e}")
+            return None
