@@ -472,6 +472,7 @@ AI判断: {reason}
             # 企业微信 Markdown 内容限制 4096（按字节更稳妥）
             MAX_BYTES = 4096
             BUFFER_BYTES = 200  # 预留缓冲（字节）
+            MAX_CONTENT_CHARS = 180  # 先按字符数收紧预览，再做字节兜底
 
             def _utf8_len(s):
                 return len(s.encode('utf-8'))
@@ -552,17 +553,25 @@ AI判断: {reason}
             content_bytes = _utf8_len(content)
             if is_duplicate:
                 truncated_content = ""
-            elif content_bytes > available_bytes:
-                # 精确计算截断后的内容长度，确保加上提示后不超过限制
-                max_content_bytes = max(0, available_bytes - suffix_bytes)
-                truncated_content = _truncate_utf8(content, max_content_bytes)
-                if max_content_bytes > 0 and _utf8_len(truncated_content) + suffix_bytes <= max(0, available_bytes):
-                    truncated_content += suffix
-                self.logger.warning(
-                    f"内容超限（{content_bytes}字节），截断为 {_utf8_len(truncated_content)} 字节，保留反馈链接"
-                )
             else:
-                truncated_content = content
+                preview_content = content[:MAX_CONTENT_CHARS]
+                preview_truncated = len(content) > MAX_CONTENT_CHARS
+
+                if preview_truncated:
+                    preview_content += suffix
+
+                preview_bytes = _utf8_len(preview_content)
+                if preview_bytes > available_bytes:
+                    # 精确计算截断后的内容长度，确保加上提示后不超过限制
+                    max_content_bytes = max(0, available_bytes - suffix_bytes)
+                    truncated_content = _truncate_utf8(content, max_content_bytes)
+                    if max_content_bytes > 0 and _utf8_len(truncated_content) + suffix_bytes <= max(0, available_bytes):
+                        truncated_content += suffix
+                    self.logger.warning(
+                        f"内容超限（{content_bytes}字节），截断为 {_utf8_len(truncated_content)} 字节，保留反馈链接"
+                    )
+                else:
+                    truncated_content = preview_content
 
             # 构建最终消息
             markdown_content = header + truncated_content + footer
