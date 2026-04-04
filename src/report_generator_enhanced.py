@@ -174,7 +174,8 @@ class EnhancedReportGenerator:
         df: pd.DataFrame,
         hospital_name: str,
         report_type: str = "special",
-        report_period: str = None
+        report_period: str = None,
+        report_date_range: str = None
     ) -> Dict[str, Any]:
         """
         生成增强版报告数据
@@ -184,6 +185,7 @@ class EnhancedReportGenerator:
         - hospital_name: 医院名称
         - report_type: 报告类型（special/quarterly/monthly）
         - report_period: 报告周期（如"2026Q1"）
+        - report_date_range: 展示在报告封面的统计周期
         """
         # 数据预处理
         df = self._preprocess_data(df)
@@ -195,7 +197,7 @@ class EnhancedReportGenerator:
             'report_period': report_period or self._auto_detect_period(df),
             'generated_time': datetime.now().strftime('%Y年%m月%d日 %H:%M'),
             'report_date': datetime.now().strftime('%Y年%m月%d日'),
-            'report_date_range': self._get_report_date_range(df),
+            'report_date_range': report_date_range or self._get_report_date_range(df),
             'summary': self._generate_summary(df),
             'overview': self._generate_overview(df),
             'distribution': self._generate_distribution(df),

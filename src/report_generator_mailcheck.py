@@ -84,6 +84,31 @@ class MailCheckReportGenerator:
             return None
         return cleaned or None
 
+    def _format_report_date_range(
+        self,
+        start_date: Optional[str],
+        end_date: Optional[str]
+    ) -> Optional[str]:
+        """优先保留用户选择的时间范围，用于报告封面展示。"""
+        def _format_date(value: Optional[str]) -> Optional[str]:
+            if not value:
+                return None
+            try:
+                return datetime.strptime(value[:10], "%Y-%m-%d").strftime("%Y年%m月%d日")
+            except ValueError:
+                return value
+
+        start_text = _format_date(start_date)
+        end_text = _format_date(end_date)
+
+        if start_text and end_text:
+            return f"{start_text}-{end_text}"
+        if start_text:
+            return f"{start_text}起"
+        if end_text:
+            return f"截至{end_text}"
+        return None
+
     def fetch_all_data(
         self,
         start_date: str = None,
@@ -328,6 +353,7 @@ class MailCheckReportGenerator:
                 report_period = f"{start_date} 至 {end_date}"
             else:
                 report_period = datetime.now().strftime('%Y年%m月')
+        report_date_range = self._format_report_date_range(start_date, end_date)
 
         # 生成报告数据
         print(f"[INFO] 正在分析数据...")
@@ -335,7 +361,8 @@ class MailCheckReportGenerator:
             df=df,
             hospital_name=hospital_name,
             report_type='special',
-            report_period=report_period
+            report_period=report_period,
+            report_date_range=report_date_range
         )
         report_data['data_scope'] = {
             'include_dismissed': include_dismissed,
