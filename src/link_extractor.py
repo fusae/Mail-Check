@@ -8,6 +8,7 @@
 import asyncio
 import re
 import logging
+import requests
 from playwright.async_api import async_playwright
 from urllib.parse import urlparse, parse_qs
 
@@ -28,6 +29,15 @@ class LinkExtractor:
         url = f"https://lt.microvivid.com/h5List?token={token}"
         
         self.logger.info(f"开始访问: {url}")
+
+        # 优先直接调用短链解析接口，避免依赖浏览器运行时。
+        api_ids = self.extract_ids_from_token_api(token)
+        if api_ids:
+            self.sentiment_ids = sorted(set(api_ids))
+            self.logger.info(f"通过短链接口提取到 {len(self.sentiment_ids)} 个舆情ID")
+            return self.sentiment_ids
+
+        self.logger.warning("短链接口未提取到ID，回退到浏览器方式")
         
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=self.headless)
@@ -83,6 +93,37 @@ class LinkExtractor:
                 await browser.close()
         
         return self.sentiment_ids
+
+    def extract_ids_from_token_api(self, token):
+        """通过短链解析接口直接提取ID，避免依赖浏览器。"""
+        api_url = f"https://console.microvivid.com/prod-api/system/link/{token}"
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Referer": f"https://lt.microvivid.com/h5List?token={token}",
+        }
+
+        try:
+            resp = requests.get(api_url, headers=headers, timeout=max(self.timeout / 1000, 10))
+            resp.raise_for_status()
+            payload = resp.json()
+        except Exception as e:
+            self.logger.warning(f"短链接口请求失败: {e}")
+            return []
+
+        if str(payload.get("code")) != "200":
+            self.logger.warning(f"短链接口返回异常: {payload}")
+            return []
+
+        data = payload.get("data") or {}
+        long_link = data.get("longLink", "")
+        if not long_link:
+            self.logger.warning(f"短链接口未返回 longLink: {payload}")
+            return []
+
+        ids = self.extract_ids_from_url(long_link)
+        if ids:
+            self.logger.info(f"短链接口返回 longLink: {long_link}")
+        return ids
     
     def extract_ids_from_url(self, url):
         """从URL中提取ID"""
