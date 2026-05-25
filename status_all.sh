@@ -6,29 +6,34 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
+cd "$(dirname "$0")"
+source ./env.sh
+
 echo -e "${BLUE}=================================="
 echo "   舆情监控系统 - 服务状态"
-echo "==================================${NC}"
+echo -e "==================================${NC}"
 echo ""
 
-# 1. 检查主程序
 echo -e "${BLUE}【舆情监控主程序】${NC}"
 MAIN_PID=$(ps -eo pid,command | grep "src/main.py" | grep -v grep | awk '{print $1}' | head -1)
 if [ -n "$MAIN_PID" ]; then
     echo -e "  状态: ${GREEN}运行中${NC}"
     echo "  进程ID: $MAIN_PID"
-    echo "  运行时间: $(ps -o etime= -p $MAIN_PID | tr -d ' ')"
-    echo "  内存: $(ps -o rss= -p $MAIN_PID | awk '{print int($1/1024)"MB"}')"
+    echo "  运行时间: $(ps -o etime= -p "$MAIN_PID" | tr -d ' ')"
+    echo "  内存: $(ps -o rss= -p "$MAIN_PID" | awk '{print int($1/1024)\"MB\"}')"
 else
     echo -e "  状态: ${RED}未运行${NC}"
 fi
 echo ""
 
-# 2. 检查API服务
 echo -e "${BLUE}【API服务】${NC}"
 API_PID=$(pgrep -f "api_server.py" | head -1)
-API_PORT=$(python3 - <<'PY'
-import yaml, sys
+STATUS_PYTHON="${PYTHON_BIN}"
+if [ ! -x "$STATUS_PYTHON" ]; then
+    STATUS_PYTHON="$(command -v python3)"
+fi
+API_PORT=$("$STATUS_PYTHON" - <<'PY'
+import yaml
 try:
     with open("config/config.yaml", "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f) or {}
@@ -41,18 +46,16 @@ if [ -n "$API_PID" ]; then
     echo -e "  状态: ${GREEN}运行中${NC}"
     echo "  进程ID: $API_PID"
     echo "  端口: ${API_PORT}"
-    echo -e "  访问: http://localhost:${API_PORT}/feedback"
+    echo "  访问: http://localhost:${API_PORT}/feedback"
 else
     echo -e "  状态: ${RED}未运行${NC}"
 fi
 echo ""
 
-# 3. 检查数据库
 echo -e "${BLUE}【数据库】${NC}"
 echo -e "  状态: ${GREEN}MySQL${NC} (配置见 config/config.yaml)"
 echo ""
 
-# 4. 最近日志
 echo -e "${BLUE}【最近日志】${NC}"
 if [ -f "logs/sentiment_monitor.log" ]; then
     echo "  主程序:"

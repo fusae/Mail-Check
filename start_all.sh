@@ -5,36 +5,36 @@ BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
+cd "$(dirname "$0")"
+source ./env.sh
+
 echo -e "${BLUE}=================================="
 echo "   舆情监控系统 - 一键启动"
-echo "==================================${NC}"
+echo -e "==================================${NC}"
 echo ""
 
-# 1. 启动 API/反馈服务
 echo -e "${BLUE}[1/2] 启动 API/反馈服务...${NC}"
-API_PID=$(pgrep -f "api_server.py")
+API_PID=$(pgrep -f "python .*src/api_server.py")
 if [ -n "$API_PID" ]; then
     echo -e "${YELLOW}API服务已在运行 (PID: $API_PID)${NC}"
 else
-    if [ -d "venv" ]; then
-        source venv/bin/activate
+    if ensure_runtime; then
         mkdir -p logs
-        nohup python3 src/api_server.py > logs/api_server.log 2>&1 &
+        nohup env PATH="$ENV_BIN:$PATH" LD_LIBRARY_PATH="${ENV_PREFIX}/lib:${LD_LIBRARY_PATH:-}" PLAYWRIGHT_NODEJS_PATH="$NODE_BIN" "$PYTHON_BIN" src/api_server.py > logs/api_server.log 2>&1 &
         echo $! > api_server.pid
-        sleep 2
-        if ps -p $(cat api_server.pid) > /dev/null 2>&1; then
+        sleep 3
+        if ps -p "$(cat api_server.pid)" > /dev/null 2>&1; then
             echo -e "${GREEN}✓ API服务启动成功 (端口: 10087)${NC}"
         else
             echo -e "${YELLOW}✗ API服务启动失败${NC}"
             rm -f api_server.pid
         fi
     else
-        echo -e "${YELLOW}虚拟环境不存在，跳过API服务${NC}"
+        echo -e "${YELLOW}运行环境不存在，跳过API服务${NC}"
     fi
 fi
 echo ""
 
-# 2. 启动主程序
 echo -e "${BLUE}[2/2] 启动舆情监控主程序...${NC}"
 if [ -f "run.sh" ]; then
     ./run.sh --daemon
@@ -46,10 +46,10 @@ fi
 echo ""
 echo -e "${GREEN}=================================="
 echo "   启动完成！"
-echo "==================================${NC}"
+echo -e "==================================${NC}"
 echo ""
 echo "服务状态:"
-echo "  主程序: ./status.sh"
+echo "  主程序: ./status_all.sh"
 echo "  查看日志: tail -f logs/sentiment_monitor.log"
 echo "  API日志: tail -f logs/api_server.log"
 echo ""

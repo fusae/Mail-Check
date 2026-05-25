@@ -5,13 +5,15 @@
 负责连接邮箱（支持Gmail/163/等），读取新邮件，提取token链接和医院名称
 """
 
-import imaplib
 import email
 from email.header import decode_header
+import imaplib
 import re
-import yaml
-from datetime import datetime
 import logging
+import socket
+from datetime import datetime
+
+import yaml
 
 class EmailMonitor:
     def __init__(self, config):
@@ -22,6 +24,8 @@ class EmailMonitor:
         self.app_password = self.config['app_password']
         self.sender = self.config['rules']['sender']
         self.subject_pattern = self.config['rules']['subject_pattern']
+        self.socket_timeout = int(self.config.get('socket_timeout', 30))
+        self.mail = None
 
         # 根据邮箱服务器类型确定邮箱类型名称
         if "163.com" in self.imap_server:
@@ -34,13 +38,24 @@ class EmailMonitor:
             self.email_type_name = "邮箱"
 
         self.logger = logging.getLogger(__name__)
-    
+
+    def _ensure_socket_timeout(self):
+        sock = getattr(self.mail, 'sock', None)
+        if sock:
+            sock.settimeout(self.socket_timeout)
+
     def connect(self):
         """连接到邮箱IMAP（支持Gmail/163等）"""
+        self.disconnect()
         try:
-            # 使用指定端口连接
-            self.mail = imaplib.IMAP4_SSL(self.imap_server, self.imap_port)
+            self.mail = imaplib.IMAP4_SSL(
+                self.imap_server,
+                self.imap_port,
+                timeout=self.socket_timeout
+            )
+            self._ensure_socket_timeout()
             self.mail.login(self.email_address, self.app_password)
+            self._ensure_socket_timeout()
             status, data = self.mail.select('INBOX')
             if status != 'OK':
                 status, data = self.mail.select('INBOX', readonly=True)
@@ -59,53 +74,80 @@ class EmailMonitor:
                 if status != 'OK':
                     self.logger.error(f"选择邮箱失败，响应: {data}")
                     raise RuntimeError("无法选择邮件文件夹，服务器未进入SELECTED状态")
-            
-            # 根据邮箱类型显示不同的日志
-            self.logger.info(f"成功连接到{self.email_type_name}: {self.email_address}")
+
+            self._ensure_socket_timeout()
+            self.logger.info(
+                f"成功连接到{self.email_type_name}: {self.email_address} (timeout={self.socket_timeout}s)"
+            )
             return True
         except Exception as e:
             self.logger.error(f"连接{self.email_type_name}失败: {e}")
+            self.disconnect()
             return False
-    
+
     def disconnect(self):
         """断开连接"""
+        mail = self.mail
+        self.mail = None
+        if not mail:
+            return
+
         try:
-            self.mail.close()
-            self.mail.logout()
-            self.logger.info("已断开邮箱连接")
-        except:
+            mail.close()
+        except Exception:
             pass
-    
+
+        try:
+            mail.logout()
+            self.logger.info("已断开邮箱连接")
+        except Exception:
+            pass
+
     def get_new_emails(self):
         """获取未读邮件"""
+        if not self.mail:
+            self.logger.warning("邮箱尚未连接，无法读取邮件")
+            return []
+
         try:
             # 搜索来自指定发件人的未读邮件
+            self._ensure_socket_timeout()
             search_criteria = f'(FROM "{self.sender}")'
             status, messages = self.mail.search(None, 'UNSEEN', search_criteria)
-            
+
             if status != 'OK':
                 self.logger.warning("未找到新邮件")
                 return []
-            
+
             email_ids = messages[0].split()
             self.logger.info(f"找到 {len(email_ids)} 封新邮件")
-            
+
             emails = []
             for email_id in email_ids:
-                email_data = self.mail.fetch(email_id, '(RFC822)')[1]
-                raw_email = email_data[0][1]
+                self._ensure_socket_timeout()
+                fetch_status, fetch_data = self.mail.fetch(email_id, '(RFC822)')
+                if fetch_status != 'OK' or not fetch_data or fetch_data[0] is None:
+                    self.logger.warning(f"获取邮件内容失败: {email_id}")
+                    continue
+
+                raw_email = fetch_data[0][1]
                 msg = email.message_from_bytes(raw_email)
-                
+
                 email_info = self.parse_email(msg)
                 if email_info:
                     emails.append(email_info)
                 self.mark_email_seen(email_id)
-            
+
             return emails
+        except (TimeoutError, socket.timeout, imaplib.IMAP4.abort, OSError) as e:
+            self.logger.error(f"获取邮件超时或连接中断: {e}")
+            self.disconnect()
+            return []
         except Exception as e:
             self.logger.error(f"获取邮件失败: {e}")
+            self.disconnect()
             return []
-    
+
     def parse_email(self, msg):
         """解析邮件，提取关键信息"""
         try:
