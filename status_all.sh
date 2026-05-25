@@ -20,7 +20,7 @@ if [ -n "$MAIN_PID" ]; then
     echo -e "  状态: ${GREEN}运行中${NC}"
     echo "  进程ID: $MAIN_PID"
     echo "  运行时间: $(ps -o etime= -p "$MAIN_PID" | tr -d ' ')"
-    echo "  内存: $(ps -o rss= -p "$MAIN_PID" | awk '{print int($1/1024)\"MB\"}')"
+    echo "  内存: $(ps -o rss= -p "$MAIN_PID" | awk '{print int($1/1024)"MB"}')"
 else
     echo -e "  状态: ${RED}未运行${NC}"
 fi
